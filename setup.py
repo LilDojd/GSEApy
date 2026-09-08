@@ -25,6 +25,7 @@ setup(
             "Cargo.toml",
             debug="DEBUG" in os.environ,
             binding=Binding.PyO3,
+            features=["extension-module"],
         )
     ],
     cmdclass={"sdist": CargoModifiedSdist},

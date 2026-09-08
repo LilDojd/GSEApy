@@ -2,6 +2,7 @@
 
 use crate::utils::DynamicEnum;
 use crate::utils::{Metric, ScoreType, Statistic};
+#[cfg(feature = "python")]
 use pyo3::prelude::*;
 use rand::rngs::SmallRng;
 use rand::seq::SliceRandom;
@@ -12,21 +13,17 @@ use rayon::prelude::*;
 ///
 /// `tops` and `bottoms` are populated only when `return_all_extremes = true`.
 /// `leading_edge` is populated only when `return_leading_edge = true`.
-#[pyclass(from_py_object)]
+#[cfg_attr(feature = "python", pyclass(from_py_object, get_all))]
 #[derive(Debug, Clone)]
 pub struct GseaStatResult {
     /// Enrichment score (scalar summary statistic).
-    #[pyo3(get)]
     pub es: f64,
     /// Per-hit running ES *after* each hit step (length k). Used for enrichment plots.
-    #[pyo3(get)]
     pub tops: Vec<f64>,
     /// Per-hit running ES *before* each hit step, i.e. after the preceding miss run
     /// (length k). Used for enrichment plots.
-    #[pyo3(get)]
     pub bottoms: Vec<f64>,
     /// 0-based indices (into the original `stats` slice) of leading-edge genes.
-    #[pyo3(get)]
     pub leading_edge: Vec<usize>,
 }
 

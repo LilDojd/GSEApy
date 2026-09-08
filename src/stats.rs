@@ -5,6 +5,7 @@ use crate::fgsea::util::multilevelError;
 use crate::fgsea::{calcGseaStatCumulativeBatch, compute_pvalue_multilevel, scale_ranks};
 use crate::utils::{CorrelType, DynamicEnum, Metric, Statistic};
 use itertools::{izip, Itertools};
+#[cfg(feature = "python")]
 use pyo3::prelude::*;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -61,31 +62,20 @@ fn multilevel_error_pval(pval: f64, sample_size: usize) -> f64 {
     multilevelError(level as i32, sample_size as i32)
 }
 
-#[pyclass(from_py_object)]
+#[cfg_attr(feature = "python", pyclass(from_py_object, get_all, set_all))]
 #[allow(dead_code)]
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GSEASummary {
-    #[pyo3(get, set)]
     pub term: String,
-    #[pyo3(get, set)]
     pub es: f64,
-    #[pyo3(get, set)]
     pub nes: f64,
-    #[pyo3(get, set)]
     pub pval: f64, // Nominal Pvalue
-    #[pyo3(get, set)]
     pub fwerp: f64, // FWER Pvalue
-    #[pyo3(get, set)]
     pub fdr: f64, // FDR q value. adjusted FDR
-    #[pyo3(get, set)]
     pub log2err: f64, // log2 error bound for multilevel p-value (NaN when not applicable)
-    #[pyo3(get, set)]
     pub run_es: Vec<f64>,
-    #[pyo3(get, set)]
     pub hits: Vec<usize>, // indices of genes that matches
-    #[pyo3(get, set)]
     pub esnull: Vec<f64>,
-    #[pyo3(get, set)]
     pub index: Option<usize>, // sample index
 }
 
@@ -216,27 +206,19 @@ impl GSEASummary {
     }
 }
 
-#[pyclass(skip_from_py_object)]
+#[cfg_attr(feature = "python", pyclass(skip_from_py_object))]
 #[allow(dead_code)]
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GSEAResult {
-    #[pyo3(get, set)]
     pub summaries: Vec<GSEASummary>,
-    #[pyo3(get, set)]
     pub weight: f64,
-    #[pyo3(get, set)]
     pub min_size: usize,
-    #[pyo3(get, set)]
     pub max_size: usize,
-    #[pyo3(get, set)]
     pub nperm: usize,
     nes_concat: Vec<f64>,
     nesnull_concat: Vec<f64>,
-    #[pyo3(get, set)]
     pub seed: u64,
-    #[pyo3(get, set)]
     pub rankings: Vec<Vec<f64>>,
-    #[pyo3(get, set)]
     pub indices: Vec<Vec<usize>>, // indices after ranking
 }
 
@@ -594,6 +576,15 @@ impl GSEAResult {
         self.summaries = summ;
     }
 
+    /// Run permutation-based GSEA on a preprocessed ranking, without Python.
+    ///
+    /// This is the low-level computational API: it does not sort, deduplicate,
+    /// normalize gene identifiers, or validate inputs. See the crate-level
+    /// documentation for input requirements and a complete example.
+    /// Use a fresh [`GSEAResult`] for each analysis.
+    ///
+    /// Work uses the current Rayon pool; callers can use `ThreadPool::install`
+    /// to control parallelism without changing process-global settings.
     pub fn prerank(&mut self, genes: &[String], metric: &[f64], gmt: &BTreeMap<&str, &[String]>) {
         // NOTE: input must not contain duplcated genes
 

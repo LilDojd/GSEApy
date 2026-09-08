@@ -41,3 +41,6 @@ gseapy_tutorial.ipynb
 target
 .jupyter
 CLAUDE.md
+.devenv/
+.direnv/
+.venv/

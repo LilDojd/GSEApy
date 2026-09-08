@@ -1,5 +1,6 @@
 #![allow(dead_code, unused)]
 
+#[cfg(feature = "python")]
 use pyo3::prelude::*;
 use std::error::Error;
 use std::fs::File;
@@ -12,7 +13,7 @@ use rand::Rng;
 use std::collections::HashMap;
 use std::hash::Hash;
 
-#[pyclass(eq, eq_int, from_py_object)]
+#[cfg_attr(feature = "python", pyclass(eq, eq_int, from_py_object))]
 #[derive(Copy, Clone, PartialEq)]
 pub enum Metric {
     Signal2Noise = 0,
@@ -23,7 +24,7 @@ pub enum Metric {
     DiffOfClasses = 5,
 }
 
-#[pyclass(eq, eq_int, from_py_object)]
+#[cfg_attr(feature = "python", pyclass(eq, eq_int, from_py_object))]
 #[derive(Copy, Clone, PartialEq)]
 pub enum CorrelType {
     Rank = 0,
@@ -37,7 +38,7 @@ pub enum CorrelType {
 ///   (positive or negative).
 /// - `Pos`: one-tailed, only the maximum (positive) enrichment score is considered.
 /// - `Neg`: one-tailed, only the minimum (negative) enrichment score is considered.
-#[pyclass(eq, eq_int, from_py_object)]
+#[cfg_attr(feature = "python", pyclass(eq, eq_int, from_py_object))]
 #[derive(Copy, Clone, PartialEq, Debug)]
 pub enum ScoreType {
     Std = 0,
