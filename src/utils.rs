@@ -59,8 +59,12 @@ impl Statistic for &[f64] {
         let count = self.len() as f64;
         sum / count
     }
-    /// return (mean, std), don't know why this is very slow
+    /// Return the mean and standard deviation.
     fn stat(&self, ddof: usize) -> (f64, f64) {
+        #[cfg(feature = "simd")]
+        if self.len() >= 16 {
+            return crate::simd::mean_std(self, ddof);
+        }
         let sum: f64 = self.iter().sum();
         let count = self.len();
         let mean = sum / (count as f64);
@@ -136,7 +140,7 @@ where
     pub fn add_if_new(&mut self, element: T) -> usize {
         if self._elt_to_idx.contains_key(&element) {
             return *self._elt_to_idx.get(&element).unwrap();
-        } 
+        }
         let key = element.clone();
         let idx = self._num_indices;
         self._idx_to_elt.push(element);
@@ -149,9 +153,7 @@ where
         self._elt_to_idx.get(element)
     }
     pub fn index_of_any(&self, elements: &[T]) -> Vec<&usize> {
-        elements.iter()
-        .filter_map(|e| self.index_of(e))
-        .collect()
+        elements.iter().filter_map(|e| self.index_of(e)).collect()
     }
     #[allow(dead_code)]
     pub fn contain_elt(&self, element: &T) -> bool {

@@ -16,7 +16,9 @@ use crate::fgsea::{
 };
 
 fn base(rel: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/fgsea").join(rel)
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/data/fgsea")
+        .join(rel)
 }
 
 fn read_to_string(rel: &str) -> String {
@@ -47,7 +49,11 @@ fn load_rows_i32(rel: &str) -> Vec<Vec<i32>> {
     let s = read_to_string(rel);
     s.lines()
         .filter(|l| !l.trim().is_empty())
-        .map(|l| l.split('\t').map(|t| t.trim().parse::<i32>().unwrap()).collect())
+        .map(|l| {
+            l.split('\t')
+                .map(|t| t.trim().parse::<i32>().unwrap())
+                .collect()
+        })
         .collect()
 }
 
@@ -55,7 +61,12 @@ fn load_rows_i32(rel: &str) -> Vec<Vec<i32>> {
 fn load_tsv(rel: &str) -> (Vec<String>, Vec<Vec<String>>) {
     let s = read_to_string(rel);
     let mut lines = s.lines().filter(|l| !l.trim().is_empty());
-    let header: Vec<String> = lines.next().unwrap().split('\t').map(|x| x.to_string()).collect();
+    let header: Vec<String> = lines
+        .next()
+        .unwrap()
+        .split('\t')
+        .map(|x| x.to_string())
+        .collect();
     let rows: Vec<Vec<String>> = lines
         .map(|l| l.split('\t').map(|x| x.to_string()).collect())
         .collect();
@@ -71,7 +82,13 @@ fn close(a: f64, b: f64, atol: f64, rtol: f64) -> (bool, f64, f64) {
 
 /// Assert two vectors agree within tolerance; report the worst element.
 fn assert_vec_close(label: &str, got: &[f64], want: &[f64], atol: f64, rtol: f64) {
-    assert_eq!(got.len(), want.len(), "{label}: length {} != {}", got.len(), want.len());
+    assert_eq!(
+        got.len(),
+        want.len(),
+        "{label}: length {} != {}",
+        got.len(),
+        want.len()
+    );
     let mut worst = (0usize, 0.0f64, 0.0f64);
     for (i, (&g, &w)) in got.iter().zip(want.iter()).enumerate() {
         let (ok, abs, rel) = close(g, w, atol, rtol);
@@ -94,7 +111,10 @@ fn assert_vec_close(label: &str, got: &[f64], want: &[f64], atol: f64, rtol: f64
 fn assert_exact(label: &str, got: &[f64], want: &[f64]) {
     assert_eq!(got.len(), want.len(), "{label}: length mismatch");
     for (i, (&g, &w)) in got.iter().zip(want.iter()).enumerate() {
-        assert_eq!(g, w, "{label}[{i}]: got {g}, want {w} (expected EXACT equality)");
+        assert_eq!(
+            g, w,
+            "{label}[{i}]: got {g}, want {w} (expected EXACT equality)"
+        );
     }
     eprintln!("{label}: OK ({} values, exact)", got.len());
 }
@@ -117,7 +137,13 @@ fn validate_calcGseaStatCumulative() {
             .map(|r| r[2].parse::<f64>().unwrap())
             .collect();
         let got = calcGseaStatCumulative(&stats, &selected, 1.0, score_type);
-        assert_vec_close(&format!("cumulative[{score_type}]"), &got, &want, 1e-12, 1e-12);
+        assert_vec_close(
+            &format!("cumulative[{score_type}]"),
+            &got,
+            &want,
+            1e-12,
+            1e-12,
+        );
     }
 }
 
@@ -148,11 +174,31 @@ fn validate_calcGseaStatCumulativeBatch() {
     let pathways_sizes = load_i32s("inputs/cumbatch_pathwaysSizes.tsv", false);
 
     // params per SPEC.md: iterations=1000, seed=42, gseaParam=1, scoreType="std"
-    let got = calcGseaStatCumulativeBatch(&stats, 1.0, &pathway_scores, &pathways_sizes, 1000, 42, "std");
+    let got = calcGseaStatCumulativeBatch(
+        &stats,
+        1.0,
+        &pathway_scores,
+        &pathways_sizes,
+        1000,
+        42,
+        "std",
+    );
 
     let (header, rows) = load_tsv("refs/ref_calcGseaStatCumulativeBatch.tsv");
-    assert_eq!(header, ["pathway_index0", "leEs", "geEs", "leZero", "geZero", "leZeroSum", "geZeroSum"]);
-    let col = |j: usize| -> Vec<f64> { rows.iter().map(|r| r[j].parse::<f64>().unwrap()).collect() };
+    assert_eq!(
+        header,
+        [
+            "pathway_index0",
+            "leEs",
+            "geEs",
+            "leZero",
+            "geZero",
+            "leZeroSum",
+            "geZeroSum"
+        ]
+    );
+    let col =
+        |j: usize| -> Vec<f64> { rows.iter().map(|r| r[j].parse::<f64>().unwrap()).collect() };
 
     // Integer counts: exact equality (any drift => the MT19937/combination stream diverged).
     assert_exact("cumBatch.leEs", &got.leEs, &col(1));
@@ -173,23 +219,64 @@ fn validate_fgseaMultilevelCpp() {
     let es = load_f64s("inputs/multilevel_enrichmentScores.tsv", true);
 
     let (header, rows) = load_tsv("refs/ref_fgseaMultilevelCpp.tsv");
-    assert_eq!(header, ["pathwaySize", "es_index0", "ES", "cppMPval", "cppIsCpGeHalf", "log2err"]);
+    assert_eq!(
+        header,
+        [
+            "pathwaySize",
+            "es_index0",
+            "ES",
+            "cppMPval",
+            "cppIsCpGeHalf",
+            "log2err"
+        ]
+    );
 
     // params per SPEC.md: sampleSize=101, seed=42, eps=0, sign=false, moveScale=1
     for pathway_size in [25, 100] {
         let res = fgseaMultilevelCpp(&es, &ranks, pathway_size, 101, 42, 0.0, false, 1.0, false);
 
-        let want_rows: Vec<&Vec<String>> =
-            rows.iter().filter(|r| r[0].parse::<i32>().unwrap() == pathway_size).collect();
+        let want_rows: Vec<&Vec<String>> = rows
+            .iter()
+            .filter(|r| r[0].parse::<i32>().unwrap() == pathway_size)
+            .collect();
         assert_eq!(want_rows.len(), es.len());
 
-        let want_pval: Vec<f64> = want_rows.iter().map(|r| r[3].parse::<f64>().unwrap()).collect();
-        let want_iscp: Vec<f64> = want_rows.iter().map(|r| r[4].parse::<f64>().unwrap()).collect();
-        let want_log2: Vec<f64> = want_rows.iter().map(|r| r[5].parse::<f64>().unwrap()).collect();
+        let want_pval: Vec<f64> = want_rows
+            .iter()
+            .map(|r| r[3].parse::<f64>().unwrap())
+            .collect();
+        let want_iscp: Vec<f64> = want_rows
+            .iter()
+            .map(|r| r[4].parse::<f64>().unwrap())
+            .collect();
+        let want_log2: Vec<f64> = want_rows
+            .iter()
+            .map(|r| r[5].parse::<f64>().unwrap())
+            .collect();
 
-        let iscp: Vec<f64> = res.cppIsCpGeHalf.iter().map(|&b| if b { 1.0 } else { 0.0 }).collect();
-        assert_exact(&format!("multilevel[{pathway_size}].cppIsCpGeHalf"), &iscp, &want_iscp);
-        assert_vec_close(&format!("multilevel[{pathway_size}].pval"), &res.cppMPval, &want_pval, 1e-12, 1e-6);
-        assert_vec_close(&format!("multilevel[{pathway_size}].log2err"), &res.log2err, &want_log2, 1e-9, 1e-6);
+        let iscp: Vec<f64> = res
+            .cppIsCpGeHalf
+            .iter()
+            .map(|&b| if b { 1.0 } else { 0.0 })
+            .collect();
+        assert_exact(
+            &format!("multilevel[{pathway_size}].cppIsCpGeHalf"),
+            &iscp,
+            &want_iscp,
+        );
+        assert_vec_close(
+            &format!("multilevel[{pathway_size}].pval"),
+            &res.cppMPval,
+            &want_pval,
+            1e-12,
+            1e-6,
+        );
+        assert_vec_close(
+            &format!("multilevel[{pathway_size}].log2err"),
+            &res.log2err,
+            &want_log2,
+            1e-9,
+            1e-6,
+        );
     }
 }

@@ -192,26 +192,29 @@ impl GSVA {
     fn compute_rank_score2(&self, mat: &[Vec<f64>]) -> (Vec<Vec<f64>>, Vec<Vec<usize>>) {
         let n_samples = mat[0].len();
         let n_genes = mat.len();
-    
-        (0..n_samples).into_par_iter().map(|sample_idx| {
-            let mut sample: Vec<f64> = Vec::with_capacity(n_genes);
-            for gene in mat {
-                sample.push(gene[sample_idx]);
-            }
-            
-            let (sorted_idx, sorted_vals) = sample.as_slice().argsort(false);
-            let rev_idx: Vec<f64> = (1..=n_genes)
-                .rev()
-                .map(|v| ((v as f64) - (n_genes as f64) / 2.0).abs())
-                .collect();
-    
-            let mut tmp = vec![0.0; n_genes];
-            sorted_idx.iter().enumerate().for_each(|(i, &j)| {
-                tmp[j] = rev_idx[i];
-            });
-    
-            (tmp, sorted_idx)
-        }).unzip()
+
+        (0..n_samples)
+            .into_par_iter()
+            .map(|sample_idx| {
+                let mut sample: Vec<f64> = Vec::with_capacity(n_genes);
+                for gene in mat {
+                    sample.push(gene[sample_idx]);
+                }
+
+                let (sorted_idx, sorted_vals) = sample.as_slice().argsort(false);
+                let rev_idx: Vec<f64> = (1..=n_genes)
+                    .rev()
+                    .map(|v| ((v as f64) - (n_genes as f64) / 2.0).abs())
+                    .collect();
+
+                let mut tmp = vec![0.0; n_genes];
+                sorted_idx.iter().enumerate().for_each(|(i, &j)| {
+                    tmp[j] = rev_idx[i];
+                });
+
+                (tmp, sorted_idx)
+            })
+            .unzip()
     }
     fn ks_sample(
         &self,
@@ -327,7 +330,7 @@ pub fn gsva(
 
     // Parallel KS score calculation
     let summaries: Vec<_> = gene_set_hits
-        .par_chunks(chunk_size)  // Process gene sets in chunks of 100
+        .par_chunks(chunk_size) // Process gene sets in chunks of 100
         .flat_map_iter(|chunk| {
             chunk.iter().flat_map(|(term, hits)| {
                 let hits: Vec<usize> = hits.iter().copied().map(|&i| i).collect();

@@ -16,6 +16,8 @@
 
   enterTest = ''
     cargo test --locked
+    cargo test --locked --features simd
     cargo test --locked --features python
+    cargo test --locked --features python,simd
   '';
 }

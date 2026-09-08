@@ -64,7 +64,12 @@ impl score_t {
 impl std::ops::Neg for score_t {
     type Output = score_t;
     fn neg(self) -> score_t {
-        score_t { NS: self.NS, coef_NS: -self.coef_NS, diff: self.diff, coef_const: -self.coef_const }
+        score_t {
+            NS: self.NS,
+            coef_NS: -self.coef_NS,
+            diff: self.diff,
+            coef_const: -self.coef_const,
+        }
     }
 }
 
@@ -110,8 +115,18 @@ pub fn calcES(ranks: &[i64], p: &[i32], NS: i64) -> score_t {
     // p must be sorted
     let n: i32 = ranks.len() as i32;
     let k: i32 = p.len() as i32;
-    let mut res = score_t { NS, coef_NS: 0, diff: (n - k) as i64, coef_const: 0 };
-    let mut cur = score_t { NS, coef_NS: 0, diff: (n - k) as i64, coef_const: 0 };
+    let mut res = score_t {
+        NS,
+        coef_NS: 0,
+        diff: (n - k) as i64,
+        coef_const: 0,
+    };
+    let mut cur = score_t {
+        NS,
+        coef_NS: 0,
+        diff: (n - k) as i64,
+        coef_const: 0,
+    };
     let mut last: i32 = -1;
     for &pos in p {
         cur.coef_const += (pos - last - 1) as i64;
@@ -152,8 +167,18 @@ pub fn calcPositiveES(ranks: &[i64], p: &[i32], NS: i64) -> score_t {
     // p must be sorted
     let n: i32 = ranks.len() as i32;
     let k: i32 = p.len() as i32;
-    let mut res = score_t { NS, coef_NS: 0, diff: (n - k) as i64, coef_const: 0 };
-    let mut cur = score_t { NS, coef_NS: 0, diff: (n - k) as i64, coef_const: 0 };
+    let mut res = score_t {
+        NS,
+        coef_NS: 0,
+        diff: (n - k) as i64,
+        coef_const: 0,
+    };
+    let mut cur = score_t {
+        NS,
+        coef_NS: 0,
+        diff: (n - k) as i64,
+        coef_const: 0,
+    };
     let mut last: i32 = -1;
     for &pos in p {
         cur.coef_NS += ranks[pos as usize];

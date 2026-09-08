@@ -1,4 +1,3 @@
-# This workflow installs dependencies via uv, lints with ruff, and runs pytest.
 name: GSEApy
 
 on:
@@ -9,6 +8,25 @@ on:
   workflow_dispatch:
 
 jobs:
+  rust:
+    name: Rust (${{ matrix.os }}, features=${{ matrix.features }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        features: ["", "simd"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.98.1'
+          components: rustfmt
+      - name: Check Rust formatting
+        run: cargo fmt -p gseapy --check
+      - name: Test Rust library
+        run: cargo test --release --locked --features "${{ matrix.features }}"
+
   build:
     runs-on: ubuntu-latest
     steps:

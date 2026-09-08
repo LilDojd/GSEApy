@@ -3,8 +3,12 @@
 mod algorithm;
 mod fgsea;
 mod gsva;
+mod scoring;
 mod stats;
 mod utils;
+
+#[cfg(feature = "simd")]
+mod simd;
 
 #[cfg(feature = "python")]
 mod python;

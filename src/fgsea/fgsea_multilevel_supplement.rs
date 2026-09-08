@@ -9,7 +9,9 @@
 
 use special::Gamma;
 
-use crate::fgsea::es_calculation::{calcES, calcES_auto, calcPositiveES, calcPositiveES_auto, score_t};
+use crate::fgsea::es_calculation::{
+    calcES, calcES_auto, calcPositiveES, calcPositiveES_auto, score_t,
+};
 use crate::fgsea::util::{betaMeanLog, combination, random_engine_t, uid_wrapper};
 
 pub type hash_t = u64;
@@ -240,8 +242,12 @@ impl EsRuler {
         }
 
         for sampleId in 0..sampleSize {
-            self.currentSamples[sampleId] =
-                combination(0, self.ranks.len() as i32 - 1, self.pathwaySize as i32, &mut gen);
+            self.currentSamples[sampleId] = combination(
+                0,
+                self.ranks.len() as i32 - 1,
+                self.pathwaySize as i32,
+                &mut gen,
+            );
             self.currentSamples[sampleId].sort();
         }
 
@@ -326,8 +332,13 @@ impl EsRuler {
             while nAccepted < needAccepted {
                 for sampleId in 0..sampleSize {
                     let bound = self.levels.last().unwrap().bound;
-                    let perturbResult =
-                        self.perturbate(&self.ranks, k, &mut samplesChunks[sampleId], bound, &mut gen);
+                    let perturbResult = self.perturbate(
+                        &self.ranks,
+                        k,
+                        &mut samplesChunks[sampleId],
+                        bound,
+                        &mut gen,
+                    );
                     nAccepted += perturbResult.moves;
                 }
                 nIterations += 1;
@@ -335,7 +346,13 @@ impl EsRuler {
             for _ in 0..nIterations {
                 for sampleId in 0..sampleSize {
                     let bound = self.levels.last().unwrap().bound;
-                    self.perturbate(&self.ranks, k, &mut samplesChunks[sampleId], bound, &mut gen);
+                    self.perturbate(
+                        &self.ranks,
+                        k,
+                        &mut samplesChunks[sampleId],
+                        bound,
+                        &mut gen,
+                    );
                 }
             }
 
@@ -417,11 +434,7 @@ impl EsRuler {
                 let numerator = if sign { cntLast } else { cntPositive };
                 if numerator == 0 {
                     adjLogPval += betaMeanLog(1, self.sampleSize as u64);
-                    return (
-                        0.0_f64.max(1.0_f64.min(adjLogPval.exp())),
-                        true,
-                        f64::NAN,
-                    );
+                    return (0.0_f64.max(1.0_f64.min(adjLogPval.exp())), true, f64::NAN);
                 }
 
                 adjLogPval += betaMeanLog(numerator as u64, self.sampleSize as u64);
@@ -585,10 +598,9 @@ impl EsRuler {
             let newVal = uid_n.call(rng);
 
             // upper_bound / lower_bound
-            let newChunkInd =
-                self.chunkLastElement.partition_point(|&x| x <= newVal) as i32;
-            let newIndInChunk = sampleChunks.chunks[newChunkInd as usize]
-                .partition_point(|&x| x < newVal) as i32;
+            let newChunkInd = self.chunkLastElement.partition_point(|&x| x <= newVal) as i32;
+            let newIndInChunk =
+                sampleChunks.chunks[newChunkInd as usize].partition_point(|&x| x < newVal) as i32;
 
             if newIndInChunk < sampleChunks.chunks[newChunkInd as usize].len() as i32
                 && sampleChunks.chunks[newChunkInd as usize][newIndInChunk as usize] == newVal
@@ -665,8 +677,8 @@ impl EsRuler {
                     coef_const: curX as i64,
                 }) {
                     curY += sampleChunks.chunkSum[i];
-                    curX += self.chunkLastElement[i] - last - 1
-                        - sampleChunks.chunks[i].len() as i32;
+                    curX +=
+                        self.chunkLastElement[i] - last - 1 - sampleChunks.chunks[i].len() as i32;
                     last = self.chunkLastElement[i] - 1;
                 } else {
                     for idx in 0..sampleChunks.chunks[i].len() {

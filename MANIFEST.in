@@ -1,2 +1,2 @@
-include LICENSE README.rst README-rust.md requirements.txt Cargo.toml
+include LICENSE README.rst README-rust.md requirements.txt Cargo.toml Cargo.lock rust-toolchain.toml
 recursive-include src *.rs

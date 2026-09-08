@@ -255,7 +255,7 @@ fn gsva_rs(
     tau: f64,
     min_size: usize,
     max_size: usize,
-    threads: usize
+    threads: usize,
 ) -> PyResult<GSEAResult> {
     let pool = build_pool(threads)?;
     let gs = py.detach(|| {
@@ -315,12 +315,9 @@ fn fgsea_rs(
         gmt.insert(k.as_str(), v.as_slice());
     }
     let mut gsea = GSEAResult::new(weight, max_size, min_size, nperm, seed);
-    py.detach(|| {
-        pool.install(|| gsea.prerank_multilevel(&genes, &metric, &gmt, sample_size, eps))
-    });
+    py.detach(|| pool.install(|| gsea.prerank_multilevel(&genes, &metric, &gmt, sample_size, eps)));
     Ok(gsea)
 }
-
 
 /// Compute the GSEA enrichment score and optional curve data for a single gene set.
 ///
@@ -371,9 +368,9 @@ fn fgsea_rs(
 // }
 
 /// Python module for GSEA (Gene Set Enrichment Analysis) and ssGSEA
-/// 
+///
 /// This module provides five functions:
-/// 
+///
 /// - `gsea_rs`: performs GSEA
 /// - `prerank_rs`: performs GSEA preranking
 /// - `prerank2d_rs`: performs GSEA preranking with multiple input datasets
@@ -444,6 +441,9 @@ mod thread_pool_tests {
                 .max()
                 .unwrap()
         });
-        assert_eq!(observed, 2, "nested par_iter should run on the 2-thread pool");
+        assert_eq!(
+            observed, 2,
+            "nested par_iter should run on the 2-thread pool"
+        );
     }
 }

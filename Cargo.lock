@@ -134,6 +134,7 @@ dependencies = [
  "serde",
  "special",
  "statrs",
+ "wide",
 ]
 
 [[package]]

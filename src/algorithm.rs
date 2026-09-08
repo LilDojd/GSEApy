@@ -1,5 +1,6 @@
 #![allow(dead_code, unused)]
 
+use crate::scoring::{gsea_score, ssgsea_score, RankWeights, SortedIndices};
 use crate::utils::DynamicEnum;
 use crate::utils::{Metric, ScoreType, Statistic};
 #[cfg(feature = "python")]
@@ -73,7 +74,13 @@ pub fn calc_gsea_stat(
         )
     } else {
         let mut cum = 0.0;
-        let cumsum: Vec<f64> = r_adj.iter().map(|&v| { cum += v / nr; cum }).collect();
+        let cumsum: Vec<f64> = r_adj
+            .iter()
+            .map(|&v| {
+                cum += v / nr;
+                cum
+            })
+            .collect();
         let norm: Vec<f64> = r_adj.iter().map(|&v| v / nr).collect();
         (cumsum, norm)
     };
@@ -170,13 +177,16 @@ pub fn calc_gsea_stat(
     }
 }
 
-
 /// Ensures std is at least 0.2 * abs(mean); if still 0, use 0.2.
 /// Matches the original R/GSEA implementation.
 #[inline]
 fn sigma_correction(std: f64, mean: f64) -> f64 {
     let s = std.max(0.2 * mean.abs());
-    if s == 0.0 { 0.2 } else { s }
+    if s == 0.0 {
+        0.2
+    } else {
+        s
+    }
 }
 
 pub trait EnrichmentScoreTrait {
@@ -191,10 +201,6 @@ pub trait EnrichmentScoreTrait {
     /// `calc_gsea_stat`.  Cost is O(N) (the result is a length-N vector), same order as
     /// `running_enrichment_score`; the only saving is the O(k) `tops` intermediate.
     fn reconstruct_run_es_from_tops(&self, metric: &[f64], tag_indicator: &[f64]) -> Vec<f64>;
-    /// fast GSEA only ES value return
-    fn fast_random_walk(&self, metric: &[f64], tag_indicator: &[f64]) -> f64;
-    /// fast ssGSEA. only ES value return
-    fn fast_random_walk_ss(&self, metric: &[f64], tag_indicator: &[f64]) -> f64;
     /// calucalte metric, not sorted
     fn calculate_metric(&self, data: &[Vec<f64>], group: &[bool], method: Metric) -> Vec<f64>;
 }
@@ -294,80 +300,15 @@ impl EnrichmentScoreTrait for EnrichmentScore {
         run_es
     }
 
-    /// fast GSEA only ES value return
-    /// see here: https://github.com/ctlab/fgsea/blob/master/src/esCalculation.cpp
-    fn fast_random_walk(&self, metric: &[f64], tag_indicator: &[f64]) -> f64 {
-        // tag_indicator and metric must be sorted
-        let ns: f64 = tag_indicator
-            .iter()
-            .zip(metric.iter())
-            .map(|(&b, &v)| b * v)
-            .sum::<f64>();
-        let n: f64 = metric.len() as f64;
-        let k: f64 = tag_indicator.iter().sum::<f64>() as f64;
-        let mut res: f64 = 0.0; // running_es
-        let mut cur: f64 = 0.0;
-        let q1: f64 = 1.0 / (n - k);
-        let q2: f64 = 1.0 / ns;
-        let mut last: f64 = -1.0;
-        let p: Vec<f64> = tag_indicator
-            .iter()
-            .enumerate()
-            .filter_map(|(i, &t)| if t > 0.0 { Some(i as f64) } else { None })
-            .collect();
-
-        for pos in p {
-            cur -= q1 * (pos - last - 1.0);
-            if cur.abs() > res.abs() {
-                res = cur;
-            }
-            cur += q2 * metric.get(pos as usize).unwrap();
-            if cur.abs() > res.abs() {
-                res = cur;
-            }
-            last = pos;
-        }
-
-        // for pos in p {
-        //     cur += q2 * metric.get(pos as usize).unwrap() - q1 * (pos - last - 1);
-        //     res = max(res, cur);
-        //     last = pos;
-        // }
-        return res;
-    }
-
-    fn fast_random_walk_ss(&self, metric: &[f64], tag_indicator: &[f64]) -> f64 {
-        let n: f64 = metric.len() as f64;
-        let k: f64 = tag_indicator.iter().sum();
-        // idxs = np.flatnonzero(np.in1d(gene_ranking_index, gset)) # indices low to high
-        let idxs: Vec<usize> = tag_indicator
-            .iter()
-            .enumerate()
-            .filter_map(|(i, &t)| if t > 0.0 { Some(i) } else { None })
-            .collect();
-        let _rnk: Vec<f64> = idxs
-            .iter()
-            .map(|&i| metric.get(i).unwrap().to_owned())
-            .collect();
-        let n_idxs: Vec<f64> = idxs.iter().map(|&i| n - (i as f64)).collect();
-        // np.sum(ranking[idxs] * (n - idxs)) / np.sum(ranking[idxs])
-        let step_cdf_in: f64 = _rnk
-            .iter()
-            .zip(n_idxs.iter())
-            .map(|(r, i)| r * i)
-            .sum::<f64>()
-            / _rnk.iter().sum::<f64>();
-        //  (n * (n + 1) /2 - np.sum(n-idxs)) / (n -k)
-        let step_cdf_out: f64 = (n * (n + 1.0) / 2.0 - n_idxs.iter().sum::<f64>()) / (n - k);
-        step_cdf_in - step_cdf_out
-    }
-
     fn calculate_metric(&self, data: &[Vec<f64>], group: &[bool], method: Metric) -> Vec<f64> {
+        // Reuse group buffers across genes, local to this phenotype permutation.
+        let npos = group.iter().filter(|&&positive| positive).count();
+        let mut pos = Vec::with_capacity(npos);
+        let mut neg = Vec::with_capacity(group.len() - npos);
         data.iter()
             .map(|vec| {
-                //let end1 = Instant::now();
-                let mut pos: Vec<f64> = Vec::new();
-                let mut neg: Vec<f64> = Vec::new();
+                pos.clear();
+                neg.clear();
                 vec.iter().zip(group.iter()).for_each(|(&x, &b)| {
                     if b {
                         pos.push(x);
@@ -388,7 +329,11 @@ impl EnrichmentScoreTrait for EnrichmentScore {
                         let pos_std_c = sigma_correction(pos_std, pos_mean);
                         let neg_std_c = sigma_correction(neg_std, neg_mean);
                         let s2n = (pos_mean - neg_mean) / (pos_std_c + neg_std_c);
-                        if method == Metric::AbsSignal2Noise { s2n.abs() } else { s2n }
+                        if method == Metric::AbsSignal2Noise {
+                            s2n.abs()
+                        } else {
+                            s2n
+                        }
                     }
                     Metric::Ttest => {
                         (pos_mean - neg_mean)
@@ -478,206 +423,154 @@ impl EnrichmentScore {
         return arr;
     }
 
-    // /// phenotype permutation procedurce
-    // /// return (hit_index, es, runing_es) only. not null distribution return
-    pub fn enrichment_score_pheno(
-        &self,
-        sorted_metric: &[Vec<f64>],
-        tag_indicator: &[Vec<f64>],
-    ) -> (Vec<f64>, Vec<f64>) {
-        let run_es: Vec<f64> = self.running_enrichment_score(&sorted_metric[0], &tag_indicator[0]);
-        let ess: Vec<f64> = sorted_metric
-            .par_iter()
-            .zip(tag_indicator.par_iter())
-            .map(|(gm, tag)| {
-                let r = self.fast_random_walk(gm, tag);
-                r
-            })
-            .collect();
-        return (ess, run_es);
-    }
-
-    /// gene permutation percedure.
-    /// shufling the genes in the given ranking metric
-    /// use for prerank, ssgsea
-    /// only kept record of gene_indexes of original order to accerrlate the shuffling
-    pub fn gene_permutation(&mut self) -> Vec<DynamicEnum<usize>> {
-        let vec: Vec<usize> = (0..self.gene.size()).collect();
-        let mut orig: DynamicEnum<usize> = DynamicEnum::from(&vec);
-        let mut gperm: Vec<DynamicEnum<usize>> = Vec::new();
-        // // now = Instant::now();
+    /// Successive gene shuffles for prerank and ssGSEA.
+    /// Each vector maps original gene index to permuted position; the first
+    /// vector is the identity permutation for the observed enrichment score.
+    pub fn gene_permutation(&mut self) -> Vec<Vec<usize>> {
+        let mut orig: Vec<usize> = (0..self.gene.size()).collect();
+        let mut gperm = Vec::with_capacity(self.nperm);
         gperm.push(orig.clone());
         for _ in 1..self.nperm {
-            // inplace shuffle
-            //fastrand::shuffle(&mut tags[i]); // fastrand is a little bit faster
+            // Keep the same successive shuffles and RNG draws as DynamicEnum.
             orig.shuffle(&mut self.rng);
-            gperm.push(orig.clone());
+            let mut positions = vec![0; orig.len()];
+            for (position, &gene) in orig.iter().enumerate() {
+                positions[gene] = position;
+            }
+            gperm.push(positions);
         }
-        return gperm;
+        gperm
     }
-    /// gene_set permutation procedurce.
-    /// use vec slice as gene_set argument. since it accepts &vec<T>
-    /// return (hit_index, enrichment_score, running_es) with null distrition
-    pub fn enrichment_score_gene(
-        &mut self,
+    /// Score gene permutations using only sorted hit positions, not dense tags.
+    pub fn permutation_scores(
+        &self,
         metric: &[f64],
-        tag_indicators: &[Vec<f64>],
-    ) -> (Vec<f64>, Vec<f64>) {
-        // pararell computing
-        // let run_es: Vec<Vec<f64>> = tag_indicators
-        //     .par_iter()
-        //     .map(|tag| {
-        //         // implement the function in trait enable you to call self.methods in struct member closure!!!
-        //         self.running_enrichment_score(metric, tag)
-        //     })
-        //     .collect();
-        // let es: Vec<f64> = run_es.par_iter().map(|r| self.select_es(r)).collect();
-
-        let es: Vec<f64> = tag_indicators
+        hits: &[usize],
+        permutations: &[Vec<usize>],
+    ) -> Vec<f64> {
+        let weights = RankWeights::new(metric);
+        permutations
             .par_iter()
-            .map(|tag| self.fast_random_walk(metric, tag))
-            .collect();
-        let run_es = self.running_enrichment_score(metric, &tag_indicators[0]);
-
-        return (es, run_es);
+            .map_init(Vec::new, |selected, positions| {
+                selected.clear();
+                selected.extend(hits.iter().map(|&i| positions[i]));
+                let selected = SortedIndices::sort_unique(selected);
+                if self.single {
+                    ssgsea_score(metric, selected)
+                } else {
+                    gsea_score(weights, selected)
+                }
+            })
+            .collect()
     }
 }
-
-// mod tests {
-
-//     use super::*;
-//     use std::time::Instant;
-//     use crate::utils::FileReader;
-//     #[test]
-//     fn test_calcu_metric () {
-//         let mut gct = FileReader::new();
-//         let _ = gct.read_csv("data/P53.txt", b'\t', true, Some(b'#'));
-//         let mut cls = FileReader::new();
-//         let _ = cls.read_table("data/P53.cls", ' ', false);
-//         // let mut group = cls.record.pop().unwrap();
-//         println!("{:?}", &cls.record[2]);
-//         let gboo: Vec<bool> = cls.record[2].iter().map(|x| x != "WT").collect();
-//         println!("{:?}", &gboo);
-//         let weight = 1.0;
-//         let mut genes: Vec<String> = Vec::new();
-//         // let mut gene_set: Vec<String> = Vec::new();
-//         let mut gene_exp: Vec<Vec<f64>> = Vec::new();
-//         for r in gct.record.iter() {
-//             genes.push(r[0].to_string());
-//             let mut vv: Vec<f64> = Vec::new();
-//             for v in &r[2..] {
-//                 vv.push(v.parse::<f64>().unwrap());
-//             }
-//             vv.iter_mut().for_each(|x| *x = x.abs().powf(weight)); // modified value in place
-//             gene_exp.push(vv);
-//         }
-//         let end1 = Instant::now();
-//         let es = EnrichmentScore::new(&genes, 0, 123, false, false);
-//         //let gene_metric = es.phenotype_permutation(&gene_exp, &gboo, Metric::Signal2Noise);
-//         let _metric = es.calculate_metric(&gene_exp, &gboo, Metric::Signal2Noise);
-//         println!("presorted metric checked: {:.4?}", &_metric[..10]);
-//         let weighted_sorted_metric = _metric.as_slice().argsort(false);
-//         let end2 = Instant::now();
-//         println!("metric length: {}", &weighted_sorted_metric.1.len());
-//         let idx = weighted_sorted_metric.0;
-//         println!("sorted metric checked: ");
-//         for (i, v) in (&weighted_sorted_metric.1[..10]).iter().enumerate()
-//         {
-//             println!("{:?}, {:.4?}", es.gene.elt_of(idx[i]), v);
-//         }
-//         println!("Overall run time: {:.2?}", end2.duration_since(end1));
-//     }
-// }
-//    #[test]
-//    fn gene_permutation_fastrand()
-//    {
-//        let nperm = 1000;
-//        let rang = (0..20000).collect();
-//        let mut tags: Vec<Vec<i64>> = vec![rang; 1+nperm]; // 2d array
-//        let mut notags: Vec<Vec<i64>> = Vec::new();
-//        let mut rng = fastrand::Rng::with_seed(43);
-//        let start = Instant::now();
-//        for i in 1..=nperm {
-//            // inplace shuffle
-//            //fastrand::shuffle(&mut tags[i]);
-//            rng.shuffle(&mut tags[i]);
-//            let ntg: Vec<i64>  = tags[i].iter().map( |b| 1- (*b)).collect();
-//            notags.push(ntg);
-//        }
-
-//        let end = Instant::now();
-//        println!("permutation time: {:.2?}", end.duration_since(start));
-//        //tags.iter().for_each(|x| println!("{:?}", x))
-//    }
-
-//    #[test]
-//    fn gene_permutation_smallrng()
-//    {
-//        let nperm = 1000;
-//        let rang = (0..20000).collect();
-//        let mut tags: Vec<Vec<i64>> = vec![rang; 1+nperm]; // 2d array
-//        let mut notags: Vec<Vec<i64>> = Vec::new();
-//        let mut rng = SmallRng::seed_from_u64(43);
-//        let start = Instant::now();
-//        for i in 1..=nperm {
-//            // inplace shuffle
-//            //fastrand::shuffle(&mut tags[i]);
-//            tags[i].shuffle(&mut rng);
-//            let ntg: Vec<i64>  = tags[i].iter().map( |b| 1- (*b)).collect();
-//            notags.push(ntg);
-//        }
-
-//        let end = Instant::now();
-//        println!("permutation time: {:.2?}", end.duration_since(start));
-//        //tags.iter().for_each(|x| println!("{:?}", x))
-//    }
-
-//    #[test]
-//    fn gene_permutation_xoshiro256plus()
-//    {
-//        let nperm = 1000;
-//        let rang = (0..20000).collect();
-//        let mut tags: Vec<Vec<i64>> = vec![rang; 1+nperm]; // 2d array
-//        let mut notags: Vec<Vec<i64>> = Vec::new();
-//        let mut rng = Xoshiro256Plus::seed_from_u64(0);
-//        let start = Instant::now();
-//        for i in 1..=nperm {
-//            // inplace shuffle
-//            //fastrand::shuffle(&mut tags[i]);
-//            tags[i].shuffle(&mut rng);
-//            let ntg: Vec<i64>  = tags[i].iter().map( |b| 1- (*b)).collect();
-//            notags.push(ntg);
-//        }
-
-//        let end = Instant::now();
-//        println!("permutation time: {:.2?}", end.duration_since(start));
-//        //tags.iter().for_each(|x| println!("{:?}", x))
-//    }
-//    #[test]
-//    fn gene_permutation_mcg128xsl6()
-//    {
-//        let nperm = 1000;
-//        let rang = (0..20000).collect();
-//        let mut tags: Vec<Vec<i64>> = vec![rang; 1+nperm]; // 2d array
-//        let mut notags: Vec<Vec<i64>> = Vec::new();
-//        let mut rng = Mcg128Xsl64::seed_from_u64(0);
-//        let start = Instant::now();
-//        for i in 1..=nperm {
-//            // inplace shuffle
-//            //fastrand::shuffle(&mut tags[i]);
-//            tags[i].shuffle(&mut rng);
-//            let ntg: Vec<i64>  = tags[i].iter().map( |b| 1- (*b)).collect();
-//            notags.push(ntg);
-//        }
-
-//        let end = Instant::now();
-//        println!("permutation time: {:.2?}", end.duration_since(start));
-//        //tags.iter().for_each(|x| println!("{:?}", x))
-//   }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn metric_buffers_do_not_leak_between_genes() {
+        let es = EnrichmentScore::new(&[], 0, 42, false, false);
+        let data = vec![
+            vec![1.0, 2.0, 4.0, 8.0],
+            vec![3.0; 4],
+            vec![2.0, 0.0, 1.0, 0.0],
+            vec![0.0; 4],
+        ];
+        for method in [
+            Metric::Signal2Noise,
+            Metric::AbsSignal2Noise,
+            Metric::Ttest,
+            Metric::RatioOfClasses,
+            Metric::Log2RatioOfClasses,
+            Metric::DiffOfClasses,
+        ] {
+            for group in [[true, true, false, false], [true, false, true, false]] {
+                let actual = es.calculate_metric(&data, &group, method);
+                for (row, a) in data.iter().zip(actual) {
+                    let b = es.calculate_metric(std::slice::from_ref(row), &group, method)[0];
+                    assert!(a.to_bits() == b.to_bits() || (a.is_nan() && b.is_nan()));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn permutation_scores_follow_shuffled_membership() {
+        let genes: Vec<String> = (0..41).map(|i| format!("g{i}")).collect();
+        let indices: Vec<usize> = (0..genes.len()).collect();
+        let metrics: Vec<Vec<f64>> = vec![
+            indices
+                .iter()
+                .map(|&i| (i as f64 + 0.5).powf(0.25))
+                .collect(),
+            indices.iter().map(|&i| i as f64 - 20.0).collect(),
+            vec![0.0; genes.len()],
+            vec![-0.0; genes.len()],
+            vec![1.0; genes.len()],
+            indices
+                .iter()
+                .map(|&i| if i == 3 { f64::INFINITY } else { 1.0 })
+                .collect(),
+            indices
+                .iter()
+                .map(|&i| if i == 3 { f64::NAN } else { 1.0 })
+                .collect(),
+        ];
+        for seed in [0, 42, 123] {
+            for nperm in [0, 1, 7] {
+                for single in [false, true] {
+                    let mut es = EnrichmentScore::new(&genes, nperm, seed, single, false);
+                    let permutations = es.gene_permutation();
+                    let mut original = DynamicEnum::from(&indices);
+                    let mut rng = SmallRng::seed_from_u64(seed);
+                    let mut legacy = vec![original.clone()];
+                    for _ in 0..nperm {
+                        original.shuffle(&mut rng);
+                        legacy.push(original.clone());
+                    }
+                    for (positions, old) in permutations.iter().zip(&legacy) {
+                        for &i in &indices {
+                            assert_eq!(positions[i], *old.index_of(&i).unwrap());
+                        }
+                    }
+                    // Empty/full sets, first/last hits, sparse and dense sets.
+                    for hits in [
+                        vec![],
+                        vec![0],
+                        vec![40],
+                        vec![0, 3, 20, 40],
+                        indices[..40].to_vec(),
+                        indices.clone(),
+                    ] {
+                        for metric in &metrics {
+                            let actual = es.permutation_scores(metric, &hits, &permutations);
+                            for (&a, old) in actual.iter().zip(&legacy) {
+                                let tag = old.isin(&hits);
+                                let expected_hits = es.hit_index(&tag);
+                                let expected_hits = SortedIndices::new(&expected_hits).unwrap();
+                                let expected = if single {
+                                    crate::scoring::ssgsea_score_scalar(metric, expected_hits)
+                                } else {
+                                    gsea_score(RankWeights::new(metric), expected_hits)
+                                };
+                                let simd_close = cfg!(feature = "simd")
+                                    && single
+                                    && (a - expected).abs() <= 1e-12 * metric.len() as f64;
+                                assert!(
+                                    a.to_bits() == expected.to_bits()
+                                        || (a.is_nan() && expected.is_nan())
+                                        || simd_close,
+                                    "seed={seed}, nperm={nperm}, single={single}, hits={hits:?}: {a} != {expected}"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     /// Reconstruct the full O(N) running-ES vector from the O(k) tops/bottoms arrays
     /// produced by `calc_gsea_stat`.
@@ -713,38 +606,23 @@ mod tests {
         run_es
     }
 
-    /// Verify that `calc_gsea_stat` (O(k)) produces the same ES as `fast_random_walk`
-    /// for the standard score type with gsea_param = 1.0.
-    ///
-    /// `fast_random_walk` takes a pre-weighted tag_indicator array and computes max|ES|,
-    /// which equals `calc_gsea_stat` with ScoreType::Std and gsea_param = 1.0.
     #[test]
-    fn test_calc_gsea_stat_matches_fast_random_walk() {
+    fn test_calc_gsea_stat_matches_score_kernel() {
         // stats sorted descending, N = 10, gene set at positions [0, 2, 5, 8]
         let stats: Vec<f64> = vec![10.0, 8.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.5, 1.0, 0.5];
         let selected: Vec<usize> = vec![0, 2, 5, 8];
         let gsea_param = 1.0;
 
-        // Build tag_indicator as expected by fast_random_walk (already weighted by gsea_param=1)
-        let genes: Vec<String> = (0..stats.len()).map(|i| format!("g{}", i)).collect();
-        let es_obj = EnrichmentScore::new(&genes, 0, 0, false, false);
-        let mut tag: Vec<f64> = vec![0.0; stats.len()];
-        for &i in &selected {
-            tag[i] = stats[i]; // fast_random_walk uses the metric * tag directly
-        }
-        let frw_es = es_obj.fast_random_walk(&stats, &{
-            let mut t = vec![0.0f64; stats.len()];
-            for &i in &selected {
-                t[i] = 1.0;
-            }
-            t
-        });
+        let frw_es = gsea_score(
+            RankWeights::new(&stats),
+            SortedIndices::new(&selected).unwrap(),
+        );
 
         let result = calc_gsea_stat(&stats, &selected, gsea_param, ScoreType::Std, true, true);
 
         assert!(
             (result.es - frw_es).abs() < 1e-12,
-            "ES mismatch: calc_gsea_stat={}, fast_random_walk={}",
+            "ES mismatch: calc_gsea_stat={}, score kernel={}",
             result.es,
             frw_es
         );
@@ -759,9 +637,17 @@ mod tests {
         }
 
         // ES must equal the maximum of all tops/bottoms extremes (std mode)
-        let max_p = result.tops.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let max_p = result
+            .tops
+            .iter()
+            .cloned()
+            .fold(f64::NEG_INFINITY, f64::max);
         let min_p = result.bottoms.iter().cloned().fold(f64::INFINITY, f64::min);
-        let expected_es = if max_p.abs() >= min_p.abs() { max_p } else { min_p };
+        let expected_es = if max_p.abs() >= min_p.abs() {
+            max_p
+        } else {
+            min_p
+        };
         assert!(
             (result.es - expected_es).abs() < 1e-12,
             "ES does not match max|tops/bottoms|: es={}, expected={}",
@@ -805,9 +691,7 @@ mod tests {
     fn test_run_es_full_vector_matches_reconstruction() {
         // N = 12, k = 4 hits at positions [1, 4, 7, 10]; 8 misses.
         // stats are sorted descending and all positive (gsea_param = 1).
-        let stats: Vec<f64> = vec![
-            12.0, 10.0, 9.0, 8.0, 7.0, 6.0, 5.0, 4.0, 3.0, 2.5, 1.5, 0.5,
-        ];
+        let stats: Vec<f64> = vec![12.0, 10.0, 9.0, 8.0, 7.0, 6.0, 5.0, 4.0, 3.0, 2.5, 1.5, 0.5];
         let selected: Vec<usize> = vec![1, 4, 7, 10];
         let n = stats.len();
         let gsea_param = 1.0;
@@ -831,8 +715,16 @@ mod tests {
         let method_run_es = es_obj.reconstruct_run_es_from_tops(&stats, &tag);
 
         // Element-wise comparison against both reconstructions
-        assert_eq!(ref_run_es.len(), recon_run_es.len(), "vector length mismatch");
-        assert_eq!(ref_run_es.len(), method_run_es.len(), "method vector length mismatch");
+        assert_eq!(
+            ref_run_es.len(),
+            recon_run_es.len(),
+            "vector length mismatch"
+        );
+        assert_eq!(
+            ref_run_es.len(),
+            method_run_es.len(),
+            "method vector length mismatch"
+        );
         for (p, (&r, &c)) in ref_run_es.iter().zip(recon_run_es.iter()).enumerate() {
             assert!(
                 (r - c).abs() < 1e-12,
@@ -891,10 +783,7 @@ mod tests {
     fn test_run_es_full_vector_large() {
         // N = 20, k = 6 hits at positions spread across the ranking.
         // Include hits at position 0 and 19 to test boundary conditions.
-        let stats: Vec<f64> = (0..20u32)
-            .rev()
-            .map(|i| i as f64 + 1.0)
-            .collect(); // [20,19,...,1]
+        let stats: Vec<f64> = (0..20u32).rev().map(|i| i as f64 + 1.0).collect(); // [20,19,...,1]
         let selected: Vec<usize> = vec![0, 3, 7, 11, 15, 19];
         let n = stats.len();
 

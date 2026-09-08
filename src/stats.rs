@@ -3,6 +3,7 @@
 use crate::algorithm::{EnrichmentScore, EnrichmentScoreTrait};
 use crate::fgsea::util::multilevelError;
 use crate::fgsea::{calcGseaStatCumulativeBatch, compute_pvalue_multilevel, scale_ranks};
+use crate::scoring::{gsea_score, ssgsea_score, RankWeights, SortedIndices};
 use crate::utils::{CorrelType, DynamicEnum, Metric, Statistic};
 use itertools::{izip, Itertools};
 #[cfg(feature = "python")]
@@ -69,9 +70,9 @@ pub struct GSEASummary {
     pub term: String,
     pub es: f64,
     pub nes: f64,
-    pub pval: f64, // Nominal Pvalue
-    pub fwerp: f64, // FWER Pvalue
-    pub fdr: f64, // FDR q value. adjusted FDR
+    pub pval: f64,    // Nominal Pvalue
+    pub fwerp: f64,   // FWER Pvalue
+    pub fdr: f64,     // FDR q value. adjusted FDR
     pub log2err: f64, // log2 error bound for multilevel p-value (NaN when not applicable)
     pub run_es: Vec<f64>,
     pub hits: Vec<usize>, // indices of genes that matches
@@ -523,12 +524,22 @@ impl GSEAResult {
         // save indices and rankings
         self.rankings.push(sorted_metric[0].1.to_owned());
         self.indices.push(sorted_metric[0].0.to_owned());
-        // weight 
-        sorted_metric.iter_mut().for_each(|x| {
-            x.1.iter_mut().for_each(|x| {
+        // Weight metrics and replace each sorted-index list with its inverse:
+        // original gene index -> position in this permutation's ranking.
+        sorted_metric.iter_mut().for_each(|(indices, metric)| {
+            metric.iter_mut().for_each(|x| {
                 *x = x.abs().powf(self.weight);
             });
+            let mut positions = vec![0; indices.len()];
+            for (position, &gene) in indices.iter().enumerate() {
+                positions[gene] = position;
+            }
+            *indices = positions;
         });
+        let weights: Vec<RankWeights<'_>> = sorted_metric
+            .iter()
+            .map(|(_, metric)| RankWeights::new(metric))
+            .collect();
 
         // let end1 = Instant::now();
         // println!("Permutation time: {:.2?}", end1.duration_since(end));
@@ -536,28 +547,35 @@ impl GSEAResult {
         let mut summ = Vec::<GSEASummary>::new();
         for (&term, &gset) in gmt.iter() {
             let tag = es.gene.isin(gset);
-            // get es hit index of sorted array
-            let tag_new: Vec<f64> = sorted_metric[0].0.iter().map(|&i| tag[i]).collect();
-            let gidx = es.hit_index(&tag_new); // need update the sorted indices
-            if gidx.len() > self.max_size || gidx.len() < self.min_size {
+            let original_hits = es.hit_index(&tag);
+            if original_hits.len() > self.max_size || original_hits.len() < self.min_size {
                 continue;
             }
-            // get es
+            let mut gidx: Vec<usize> = original_hits
+                .iter()
+                .map(|&i| sorted_metric[0].0[i])
+                .collect();
+            gidx.sort_unstable();
+            let mut tag_new = vec![0.0; genes.len()];
+            for &i in &gidx {
+                tag_new[i] = 1.0;
+            }
             let run_es = es.running_enrichment_score(sorted_metric[0].1.as_slice(), &tag_new);
-            //let es0: f64 = es.select_es(&run_es);
             let ess: Vec<f64> = sorted_metric
                 .par_iter()
-                .map(|(indices, gm)| {
-                    // update tag_indicator since you've update metric
-                    let tag_new: Vec<f64> = indices.iter().map(|&i| tag[i]).collect();
-                    // calculate ES
-                    let r = es.fast_random_walk(gm, &tag_new);
-                    r
+                .zip(weights.par_iter())
+                .map(|((positions, _), &weights)| {
+                    let mut hits: Vec<usize> =
+                        original_hits.iter().map(|&i| positions[i]).collect();
+                    gsea_score(weights, SortedIndices::sort_unique(&mut hits))
                 })
                 .collect();
 
-            // let (ess, run_es) = es.enrichment_score_pheno(&weighted_metric, &tag);
-            let esnull: Vec<f64> = if ess.len() > 1 { ess[1..].to_vec() } else { Vec::new() };
+            let esnull: Vec<f64> = if ess.len() > 1 {
+                ess[1..].to_vec()
+            } else {
+                Vec::new()
+            };
             let gss = GSEASummary {
                 term: term.to_string(),
                 es: ess[0],
@@ -593,6 +611,7 @@ impl GSEAResult {
         let mut es = EnrichmentScore::new(genes, self.nperm, self.seed, false, false);
         // let end1 = Instant::now();
         let gperm = es.gene_permutation(); // gene permutation, only record gene idx here
+        let weights = RankWeights::new(&weighted_metric);
         let mut summ = Vec::<GSEASummary>::new();
 
         for (&term, &gset) in gmt.iter() {
@@ -602,22 +621,35 @@ impl GSEAResult {
             if gidx.len() > self.max_size || gidx.len() < self.min_size {
                 continue;
             }
-            let tag_indicators: Vec<Vec<f64>> = gperm.par_iter().map(|de| de.isin(&gidx)).collect();
-            let (ess, run_es) = es.enrichment_score_gene(&weighted_metric, &tag_indicators);
-            let esnull: Vec<f64> = if ess.len() > 1 {
-                ess[1..].to_vec()
-            } else {
-                Vec::new()
-            };
+            let run_es = es.running_enrichment_score(&weighted_metric, &gtag);
             let gss = GSEASummary {
                 term: term.to_string(),
-                es: ess[0],
-                run_es: run_es,
+                es: gsea_score(weights, SortedIndices::new(&gidx).expect("ordered hits")),
+                run_es,
                 hits: gidx,
-                esnull: esnull,
+                esnull: Vec::with_capacity(self.nperm),
                 ..Default::default()
             };
             summ.push(gss);
+        }
+        // Reuse each permutation across all sets before loading the next one.
+        let scores: Vec<Vec<f64>> = gperm[1..]
+            .par_iter()
+            .map_init(Vec::new, |selected, positions| {
+                summ.iter()
+                    .map(|g| {
+                        selected.clear();
+                        selected.extend(g.hits.iter().map(|&i| positions[i]));
+                        gsea_score(weights, SortedIndices::sort_unique(selected))
+                    })
+                    .collect()
+            })
+            .collect();
+        // Indexed collection keeps null scores in permutation order.
+        for row in scores {
+            for (g, score) in summ.iter_mut().zip(row) {
+                g.esnull.push(score);
+            }
         }
         // let end3 = Instant::now();
         // println!("Calculation time: {:.2?}", end3.duration_since(end2));
@@ -640,55 +672,68 @@ impl GSEAResult {
     ) {
         // Calculate number of samples
         let n_samples = metric[0].len();
-        
+
         // Pre-allocate vectors to store results
         self.summaries.clear();
         self.indices.clear();
         self.indices.reserve(n_samples);
-        
+
         // Process chunks of samples in parallel to control memory usage
         let chunk_size = (n_samples / rayon::current_num_threads()).max(1);
-        
+
         // Create iterator over sample indices in chunks
-        (0..n_samples).chunks(chunk_size).into_iter().for_each(|chunk| {
-            let chunk_results: Vec<_> = chunk.collect::<Vec<_>>().into_par_iter().map(|sample_idx| {
-                // Create sample vector without transposing entire matrix
-                let mut sample_metric: Vec<f64> = Vec::with_capacity(metric.len());
-                for row in metric.iter() {
-                    sample_metric.push(row[sample_idx]);
-                }
-                
-                // Sort and weight the metrics
-                let (indices, sorted_metric) = sample_metric.as_slice().argsort(false);
-                
-                // Create ordered gene list (reuse allocation)
-                let sample_genes: Vec<String> = indices.iter()
-                    .map(|&j| genes[j].to_string())
+        (0..n_samples)
+            .chunks(chunk_size)
+            .into_iter()
+            .for_each(|chunk| {
+                let chunk_results: Vec<_> = chunk
+                    .collect::<Vec<_>>()
+                    .into_par_iter()
+                    .map(|sample_idx| {
+                        // Create sample vector without transposing entire matrix
+                        let mut sample_metric: Vec<f64> = Vec::with_capacity(metric.len());
+                        for row in metric.iter() {
+                            sample_metric.push(row[sample_idx]);
+                        }
+
+                        // Sort and weight the metrics
+                        let (indices, sorted_metric) = sample_metric.as_slice().argsort(false);
+
+                        // Create ordered gene list (reuse allocation)
+                        let sample_genes: Vec<String> =
+                            indices.iter().map(|&j| genes[j].to_string()).collect();
+
+                        // Run prerank for this sample
+                        let mut gsea_tmp = GSEAResult::new(
+                            self.weight,
+                            self.max_size,
+                            self.min_size,
+                            self.nperm,
+                            self.seed,
+                        );
+                        gsea_tmp.prerank(&sample_genes, &sorted_metric, gmt);
+
+                        // Return only what we need
+                        (
+                            indices,
+                            gsea_tmp
+                                .summaries
+                                .into_iter()
+                                .map(|mut s| {
+                                    s.index = Some(sample_idx);
+                                    s
+                                })
+                                .collect::<Vec<_>>(),
+                        )
+                    })
                     .collect();
-                
-                // Run prerank for this sample
-                let mut gsea_tmp = GSEAResult::new(
-                    self.weight,
-                    self.max_size,
-                    self.min_size,
-                    self.nperm,
-                    self.seed,
-                );
-                gsea_tmp.prerank(&sample_genes, &sorted_metric, gmt);
-                
-                // Return only what we need
-                (indices, gsea_tmp.summaries.into_iter().map(|mut s| {
-                    s.index = Some(sample_idx);
-                    s
-                }).collect::<Vec<_>>())
-            }).collect();
-            
-            // Process results for this chunk
-            for (indices, summaries) in chunk_results {
-                self.indices.push(indices);
-                self.summaries.extend(summaries);
-            }
-        });
+
+                // Process results for this chunk
+                for (indices, summaries) in chunk_results {
+                    self.indices.push(indices);
+                    self.summaries.extend(summaries);
+                }
+            });
     }
 
     pub fn ss_gsea(
@@ -770,7 +815,8 @@ impl GSEAResult {
                     // let run_es = es.running_enrichment_score(metric, &tag_new);
                     // let es1 = es.select_es(&run_es);
                     // faster version of ssGSEA
-                    let es2 = es.fast_random_walk_ss(metric, &tag_new);
+                    let es2 =
+                        ssgsea_score(metric, SortedIndices::new(&gidx).expect("ordered hits"));
                     GSEASummary {
                         term: term.to_string(),
                         es: es2,
@@ -879,19 +925,8 @@ impl GSEAResult {
                     if gidx.len() > self.max_size || gidx.len() < self.min_size {
                         continue;
                     }
-                    // note: update first element of gperm to get correct order of the gene ranking
-                    let mut tag_indicators: Vec<Vec<f64>> =
-                        gperm.par_iter().map(|de| de.isin(&gidx)).collect();
-                    tag_indicators[0] = gtag; // update
-                                              // get runing enrichment score
-                    let run_es: Vec<f64> = es.running_enrichment_score(&metric, &tag_indicators[0]);
-                    let ess: Vec<f64> = tag_indicators
-                        .par_iter()
-                        .map(|tag| {
-                            // calculate ES
-                            es.fast_random_walk_ss(&metric, tag)
-                        })
-                        .collect();
+                    let run_es = es.running_enrichment_score(&metric, &gtag);
+                    let ess = es.permutation_scores(&metric, &gidx, &gperm);
 
                     let esnull: Vec<f64> = if ess.len() > 1 {
                         ess[1..].to_vec()
@@ -942,7 +977,9 @@ impl GSEAResult {
         // Build (pval, original_index) pairs sorted ascending by p-value
         let mut order: Vec<usize> = (0..m).collect();
         order.sort_unstable_by(|&a, &b| {
-            pvals[a].partial_cmp(&pvals[b]).unwrap_or(std::cmp::Ordering::Equal)
+            pvals[a]
+                .partial_cmp(&pvals[b])
+                .unwrap_or(std::cmp::Ordering::Equal)
         });
 
         // BH adjustment: q[rank] = p[rank] * m / rank
@@ -992,9 +1029,9 @@ impl GSEAResult {
         eps: f64,
     ) {
         // Build integer-scaled ranks for the multilevel algorithm.
-        let weighted_metric: Vec<f64> =
-            metric.iter().map(|x| x.abs().powf(self.weight)).collect();
+        let weighted_metric: Vec<f64> = metric.iter().map(|x| x.abs().powf(self.weight)).collect();
         let int_ranks = scale_ranks(&weighted_metric);
+        let weights = RankWeights::new(&weighted_metric);
 
         // Observed ES + running-ES curve per gene set. No gene-label permutation
         // null is built here: NES normalization uses fgsea's random-gene-set null
@@ -1015,7 +1052,7 @@ impl GSEAResult {
             }
 
             // Observed enrichment score (signed) and running-ES curve.
-            let observed_es = es.fast_random_walk(&weighted_metric, &gtag);
+            let observed_es = gsea_score(weights, SortedIndices::new(&gidx).expect("ordered hits"));
             let run_es = es.running_enrichment_score(&weighted_metric, &gtag);
 
             // p-value is deferred: fgsea needs the simple-permutation null (computed in
@@ -1047,7 +1084,7 @@ impl GSEAResult {
         // (= nperm), seed, weight (= gseaParam), and scoreType ("std").
         if self.nperm > 0 && !summ.is_empty() {
             let batch = calcGseaStatCumulativeBatch(
-                metric, // signed gene-level stats, sorted descending
+                metric,      // signed gene-level stats, sorted descending
                 self.weight, // gseaParam
                 &pathway_scores,
                 &pathway_sizes,
@@ -1070,7 +1107,11 @@ impl GSEAResult {
                 // (not `>= 0`) matches fgseaSimpleImpl, which sends a zero ES to the
                 // negative branch.
                 let nes_mean = if s.es > 0.0 { ge_mean } else { le_mean.abs() };
-                s.nes = if nes_mean != 0.0 { s.es / nes_mean } else { f64::NAN };
+                s.nes = if nes_mean != 0.0 {
+                    s.es / nes_mean
+                } else {
+                    f64::NAN
+                };
 
                 // ---- p-value, following fgseaMultilevel's two-estimator scheme ----
                 //
@@ -1190,7 +1231,9 @@ impl GSEAResult {
         // Benjamini-Hochberg correction for FDR. Gene sets with a NaN p-value are
         // excluded from the correction (and keep a NaN FDR), matching p.adjust's
         // handling of NAs -- leaving them in would corrupt the rank ordering.
-        let scored: Vec<usize> = (0..summ.len()).filter(|&i| !summ[i].pval.is_nan()).collect();
+        let scored: Vec<usize> = (0..summ.len())
+            .filter(|&i| !summ[i].pval.is_nan())
+            .collect();
         let pvals: Vec<f64> = scored.iter().map(|&i| summ[i].pval).collect();
         let fdrs = Self::bh_correction(&pvals);
         for s in summ.iter_mut() {
@@ -1212,6 +1255,179 @@ mod tests {
     // use fastrand;
     use crate::stats::GSEAResult;
     use crate::utils::FileReader;
+
+    #[test]
+    fn phenotype_results_follow_permutation_rankings() {
+        let genes: Vec<String> = (0..30).map(|i| format!("g{i}")).collect();
+        let data: Vec<Vec<f64>> = (0..30)
+            .map(|i| (0..6).map(|j| ((i % 15 + j * 7) % 19 + 1) as f64).collect())
+            .collect(); // duplicate rows deliberately exercise ranking ties
+        let group = [true, false, true, false, true, false];
+        let gmt = BTreeMap::from([
+            ("lib1__top", &genes[..5]),
+            ("lib1__bottom", &genes[25..]),
+            ("lib2__middle", &genes[10..20]),
+            ("filtered", &genes[..1]),
+        ]);
+        for threads in [1, 3] {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap();
+            pool.install(|| {
+                for method in [
+                    Metric::Signal2Noise,
+                    Metric::AbsSignal2Noise,
+                    Metric::Ttest,
+                    Metric::RatioOfClasses,
+                    Metric::Log2RatioOfClasses,
+                    Metric::DiffOfClasses,
+                ] {
+                    for weight in [0.0, 0.25, 1.0, 2.0] {
+                        for nperm in [0, 17] {
+                            let mut expected = GSEAResult::new(weight, 20, 2, nperm, 42);
+                            let mut es = EnrichmentScore::new(&genes, nperm, 42, false, false);
+                            let mut ranked = es.phenotype_permutation(&data, &group, method, false);
+                            expected.indices.push(ranked[0].0.clone());
+                            expected.rankings.push(ranked[0].1.clone());
+                            for (_, metric) in &mut ranked {
+                                metric.iter_mut().for_each(|x| *x = x.abs().powf(weight));
+                            }
+                            let mut summaries = Vec::new();
+                            for (&term, &set) in &gmt {
+                                let tag = es.gene.isin(set);
+                                let tags: Vec<Vec<f64>> = ranked
+                                    .iter()
+                                    .map(|(idx, _)| idx.iter().map(|&i| tag[i]).collect())
+                                    .collect();
+                                let hits = es.hit_index(&tags[0]);
+                                if hits.len() < 2 || hits.len() > 20 {
+                                    continue;
+                                }
+                                let scores: Vec<f64> = ranked
+                                    .iter()
+                                    .zip(&tags)
+                                    .map(|((_, metric), tag)| {
+                                        let hits = es.hit_index(tag);
+                                        gsea_score(
+                                            RankWeights::new(metric),
+                                            SortedIndices::new(&hits).unwrap(),
+                                        )
+                                    })
+                                    .collect();
+                                summaries.push(GSEASummary {
+                                    term: term.into(),
+                                    es: scores[0],
+                                    esnull: scores[1..].to_vec(),
+                                    hits,
+                                    run_es: es.running_enrichment_score(&ranked[0].1, &tags[0]),
+                                    ..Default::default()
+                                });
+                            }
+                            if nperm > 0 {
+                                expected.stat(&mut summaries);
+                            }
+                            expected.summaries = summaries;
+                            let mut actual = GSEAResult::new(weight, 20, 2, nperm, 42);
+                            actual.gsea(&genes, &group, &data, &gmt, method);
+                            assert_eq!(format!("{actual:?}"), format!("{expected:?}"));
+                        }
+                    }
+                }
+            });
+        }
+    }
+
+    #[test]
+    fn prerank_permutation_major_matches_set_major() {
+        let genes: Vec<String> = (0..70).map(|i| format!("g{i}")).collect();
+        let duplicates = vec![
+            genes[0].clone(),
+            genes[0].clone(),
+            genes[7].clone(),
+            "absent".into(),
+        ];
+        let gmt = BTreeMap::from([
+            ("lib1__top", &genes[..10]),
+            ("lib1__bottom", &genes[60..]),
+            ("lib2__middle", &genes[20..50]),
+            ("duplicates", duplicates.as_slice()),
+            ("empty", &genes[..0]),
+            ("full", genes.as_slice()),
+        ]);
+        let mut nonfinite: Vec<f64> = (0..70).map(|i| 35.0 - i as f64).collect();
+        nonfinite[0] = f64::NAN;
+        nonfinite[37] = f64::INFINITY;
+        for threads in [1, 3] {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap();
+            pool.install(|| {
+                for metric in [
+                    vec![0.0; 70],
+                    (0..70).map(|i| 35.0 - i as f64).collect(),
+                    nonfinite.clone(),
+                ] {
+                    for weight in [0.0, 0.25, 1.0, 2.0] {
+                        for nperm in [0, 1, 17] {
+                            for seed in [0, 42] {
+                                // Also exercise filtering, no retained sets, and empty/full sets.
+                                for (min, max) in [(2, 40), (71, 80), (0, 70)] {
+                                    let weighted: Vec<f64> =
+                                        metric.iter().map(|x| x.abs().powf(weight)).collect();
+                                    let mut es =
+                                        EnrichmentScore::new(&genes, nperm, seed, false, false);
+                                    let permutations = es.gene_permutation();
+                                    let mut expected =
+                                        GSEAResult::new(weight, max, min, nperm, seed);
+                                    let mut summaries = Vec::new();
+                                    for (&term, &set) in &gmt {
+                                        let tag = es.gene.isin(set);
+                                        let hits = es.hit_index(&tag);
+                                        if hits.len() < min || hits.len() > max {
+                                            continue;
+                                        }
+                                        let scores =
+                                            es.permutation_scores(&weighted, &hits, &permutations);
+                                        summaries.push(GSEASummary {
+                                            term: term.into(),
+                                            es: scores[0],
+                                            esnull: scores[1..].to_vec(),
+                                            hits,
+                                            run_es: es.running_enrichment_score(&weighted, &tag),
+                                            ..Default::default()
+                                        });
+                                    }
+                                    expected.indices.push((0..genes.len()).collect());
+                                    expected.rankings.push(metric.clone());
+                                    let expected = std::panic::catch_unwind(move || {
+                                        if nperm > 0 {
+                                            expected.stat(&mut summaries);
+                                        }
+                                        expected.summaries = summaries;
+                                        format!("{expected:?}")
+                                    });
+                                    let actual = std::panic::catch_unwind(|| {
+                                        let mut actual = GSEAResult::new(weight, max, min, nperm, seed);
+                                        actual.prerank(&genes, &metric, &gmt);
+                                        format!("{actual:?}")
+                                    });
+                                    // Undefined NES inputs can already panic in the legacy
+                                    // FDR argsort; do not silently change that behavior here.
+                                    assert_eq!(
+                                        actual.ok(), expected.ok(),
+                                        "threads={threads}, weight={weight}, nperm={nperm}, seed={seed}, min={min}, max={max}"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+    }
+
     #[test]
     fn test_prerank() {
         let cwd = std::env::current_dir().unwrap(); // prjoject root, directory to Cargo.toml
@@ -1219,10 +1435,6 @@ mod tests {
         let gmt_path = cwd.join("tests/data/hallmark.gmt");
 
         let start = Instant::now();
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(1)
-            .build_global()
-            .unwrap();
         let mut rnk = FileReader::new();
         let _ = rnk.read_csv(rnk_path.to_str().unwrap(), b'\t', false, Some(b'#'));
         let mut gmt = FileReader::new();
@@ -1396,7 +1608,9 @@ mod tests {
         const EPSILON: f64 = 1e-12;
         // Known BH correction example
         // p-values from Benjamini & Hochberg 1995 example
-        let pvals = vec![0.001, 0.008, 0.039, 0.041, 0.042, 0.06, 0.074, 0.205, 0.212, 0.216];
+        let pvals = vec![
+            0.001, 0.008, 0.039, 0.041, 0.042, 0.06, 0.074, 0.205, 0.212, 0.216,
+        ];
         let adj = GSEAResult::bh_correction(&pvals);
         // All adjusted values should be ≤ 1.0 and ≥ original p-values
         for (p, q) in pvals.iter().zip(adj.iter()) {
@@ -1410,8 +1624,14 @@ mod tests {
         let mut order: Vec<usize> = (0..pvals.len()).collect();
         order.sort_unstable_by(|&a, &b| pvals[a].partial_cmp(&pvals[b]).unwrap());
         for w in order.windows(2) {
-            assert!(adj[w[0]] <= adj[w[1]] + EPSILON,
-                "BH monotonicity violated: adj[{}]={} > adj[{}]={}", w[0], adj[w[0]], w[1], adj[w[1]]);
+            assert!(
+                adj[w[0]] <= adj[w[1]] + EPSILON,
+                "BH monotonicity violated: adj[{}]={} > adj[{}]={}",
+                w[0],
+                adj[w[0]],
+                w[1],
+                adj[w[1]]
+            );
         }
     }
 
@@ -1436,7 +1656,9 @@ mod tests {
         gmt.record.iter().for_each(|r| {
             gmt2.insert(r[0].as_str(), &r[2..]);
         });
-        gene_metric.iter_mut().for_each(|x| *x = x.abs().powf(weight));
+        gene_metric
+            .iter_mut()
+            .for_each(|x| *x = x.abs().powf(weight));
         let (gidx, metric) = gene_metric.as_slice().argsort(false);
         gene = gidx.iter().map(|&i| gene[i].clone()).collect();
 
@@ -1448,7 +1670,11 @@ mod tests {
         // Basic sanity checks
         assert!(!gsea.summaries.is_empty(), "expected some gene sets");
         for s in &gsea.summaries {
-            assert!(s.pval >= 0.0 && s.pval <= 1.0, "pval out of [0,1]: {}", s.pval);
+            assert!(
+                s.pval >= 0.0 && s.pval <= 1.0,
+                "pval out of [0,1]: {}",
+                s.pval
+            );
             assert!(s.fdr >= 0.0 && s.fdr <= 1.0, "fdr out of [0,1]: {}", s.fdr);
             // esnull should be cleared from output after NES is computed
             assert!(s.esnull.is_empty(), "esnull should be empty in output");
@@ -1457,29 +1683,47 @@ mod tests {
         }
         // BH property: FDR >= p-value for each gene set
         for s in &gsea.summaries {
-            assert!(s.fdr >= s.pval - EPSILON, "fdr {:.2e} < pval {:.2e}", s.fdr, s.pval);
+            assert!(
+                s.fdr >= s.pval - EPSILON,
+                "fdr {:.2e} < pval {:.2e}",
+                s.fdr,
+                s.pval
+            );
         }
         // NES should differ from raw ES when n_perm_simple > 0 (permutation normalisation)
         // (at least one gene set should have NES != ES due to normalisation)
         let any_nes_differs = gsea.summaries.iter().any(|s| (s.nes - s.es).abs() > 1e-6);
-        assert!(any_nes_differs, "NES should differ from ES when n_perm_simple > 0");
+        assert!(
+            any_nes_differs,
+            "NES should differ from ES when n_perm_simple > 0"
+        );
 
         // NES sign should match ES sign for all gene sets
         for s in &gsea.summaries {
-            assert!(s.nes * s.es >= 0.0, "NES and ES should have the same sign: nes={}, es={}", s.nes, s.es);
+            assert!(
+                s.nes * s.es >= 0.0,
+                "NES and ES should have the same sign: nes={}, es={}",
+                s.nes,
+                s.es
+            );
         }
 
         println!("prerank_multilevel: {} gene sets", gsea.summaries.len());
         gsea.summaries.iter().take(5).for_each(|g| {
-            println!("  term={}, es={:.4}, nes={:.4}, pval={:.2e}, fdr={:.2e}, log2err={:.2}",
-                g.term, g.es, g.nes, g.pval, g.fdr, g.log2err);
+            println!(
+                "  term={}, es={:.4}, nes={:.4}, pval={:.2e}, fdr={:.2e}, log2err={:.2}",
+                g.term, g.es, g.nes, g.pval, g.fdr, g.log2err
+            );
         });
 
         // Also test n_perm_simple=0 fallback: NES should equal ES
         let mut gsea0 = GSEAResult::new(weight, 500, 5, 0, 123);
         gsea0.prerank_multilevel(&gene, &metric, &gmt2, 51, 1e-10);
         for s in &gsea0.summaries {
-            assert!((s.nes - s.es).abs() < EPSILON, "with n_perm_simple=0, nes should equal es");
+            assert!(
+                (s.nes - s.es).abs() < EPSILON,
+                "with n_perm_simple=0, nes should equal es"
+            );
         }
     }
 
@@ -1494,10 +1738,19 @@ mod tests {
         let cwd = std::env::current_dir().unwrap();
         let mut rnk = FileReader::new();
         let _ = rnk.read_csv(
-            cwd.join("tests/data/mds.2k.rnk").to_str().unwrap(), b'\t', false, Some(b'#'));
+            cwd.join("tests/data/mds.2k.rnk").to_str().unwrap(),
+            b'\t',
+            false,
+            Some(b'#'),
+        );
         let mut gmt = FileReader::new();
         let _ = gmt.read_table(
-            cwd.join("tests/data/c2.cp.kegg.v7.5.1.symbols.gmt").to_str().unwrap(), '\t', false);
+            cwd.join("tests/data/c2.cp.kegg.v7.5.1.symbols.gmt")
+                .to_str()
+                .unwrap(),
+            '\t',
+            false,
+        );
         let mut gene: Vec<String> = Vec::new();
         let mut gene_metric: Vec<f64> = Vec::new();
         for r in rnk.record.iter() {
@@ -1522,34 +1775,58 @@ mod tests {
         let weight = 1.0;
         let (gene, metric, _rnk, gmt) = load_prerank_fixture();
         let mut gmt2 = BTreeMap::<&str, &[String]>::new();
-        gmt.record.iter().for_each(|r| { gmt2.insert(r[0].as_str(), &r[2..]); });
+        gmt.record.iter().for_each(|r| {
+            gmt2.insert(r[0].as_str(), &r[2..]);
+        });
 
         // Deterministic label shuffle (LCG): keeps the metric distribution intact but
         // destroys any association between gene sets and the ranking.
         let mut shuffled = gene.clone();
         let mut state: u64 = 0x2545F491_4F6CDD1D;
         for i in (1..shuffled.len()).rev() {
-            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             shuffled.swap(i, (state >> 33) as usize % (i + 1));
         }
 
         let mut gsea = GSEAResult::new(weight, 500, 15, 1000, 42);
         gsea.prerank_multilevel(&shuffled, &metric, &gmt2, 101, 1e-50);
-        let p: Vec<f64> = gsea.summaries.iter().map(|s| s.pval).filter(|v| !v.is_nan()).collect();
-        assert!(p.len() > 50, "expected a decent number of gene sets, got {}", p.len());
+        let p: Vec<f64> = gsea
+            .summaries
+            .iter()
+            .map(|s| s.pval)
+            .filter(|v| !v.is_nan())
+            .collect();
+        assert!(
+            p.len() > 50,
+            "expected a decent number of gene sets, got {}",
+            p.len()
+        );
 
         let mean = p.iter().sum::<f64>() / p.len() as f64;
         let frac_sig = p.iter().filter(|&&v| v < 0.05).count() as f64 / p.len() as f64;
-        println!("null calibration: n={} mean(p)={:.4} P(p<0.05)={:.4}", p.len(), mean, frac_sig);
+        println!(
+            "null calibration: n={} mean(p)={:.4} P(p<0.05)={:.4}",
+            p.len(),
+            mean,
+            frac_sig
+        );
 
         // Generous bounds: these must catch a ~2x bias, not police Monte-Carlo noise.
         // The unnormalised implementation lands at mean ~0.29 / P ~0.12.
-        assert!((0.42..=0.58).contains(&mean),
-                "null p-values are not uniform: mean(p)={:.4}, expected ~0.5. \
+        assert!(
+            (0.42..=0.58).contains(&mean),
+            "null p-values are not uniform: mean(p)={:.4}, expected ~0.5. \
                  A low mean indicates the conditional multilevel p-value is not being \
-                 divided by denomProb.", mean);
-        assert!(frac_sig < 0.10,
-                "type-I error inflated: P(p<0.05)={:.4}, expected ~0.05", frac_sig);
+                 divided by denomProb.",
+            mean
+        );
+        assert!(
+            frac_sig < 0.10,
+            "type-I error inflated: P(p<0.05)={:.4}, expected ~0.05",
+            frac_sig
+        );
     }
 
     /// `eps` floors the reported p-value, and fgsea reports no error bound once the
@@ -1559,7 +1836,9 @@ mod tests {
         let weight = 1.0;
         let (gene, metric, _rnk, gmt) = load_prerank_fixture();
         let mut gmt2 = BTreeMap::<&str, &[String]>::new();
-        gmt.record.iter().for_each(|r| { gmt2.insert(r[0].as_str(), &r[2..]); });
+        gmt.record.iter().for_each(|r| {
+            gmt2.insert(r[0].as_str(), &r[2..]);
+        });
 
         let eps = 1e-3;
         let mut gsea = GSEAResult::new(weight, 500, 15, 1000, 42);
@@ -1567,15 +1846,28 @@ mod tests {
 
         let mut clamped = 0;
         for s in &gsea.summaries {
-            if s.pval.is_nan() { continue; }
-            assert!(s.pval >= eps, "p-value {:.3e} fell below eps={:.0e}", s.pval, eps);
+            if s.pval.is_nan() {
+                continue;
+            }
+            assert!(
+                s.pval >= eps,
+                "p-value {:.3e} fell below eps={:.0e}",
+                s.pval,
+                eps
+            );
             if s.pval == eps {
                 clamped += 1;
-                assert!(s.log2err.is_nan(),
-                        "log2err must be NaN once the eps floor is hit, got {}", s.log2err);
+                assert!(
+                    s.log2err.is_nan(),
+                    "log2err must be NaN once the eps floor is hit, got {}",
+                    s.log2err
+                );
             }
         }
-        assert!(clamped > 0, "expected at least one gene set to hit the eps floor");
+        assert!(
+            clamped > 0,
+            "expected at least one gene set to hit the eps floor"
+        );
     }
 
     /// Classical `prerank()` and `prerank_multilevel()` must agree exactly on ES, and
@@ -1624,17 +1916,29 @@ mod tests {
 
         // Build maps: term → summary
         let classical_map: HashMap<&str, &GSEASummary> = gsea_classical
-            .summaries.iter().map(|s| (s.term.as_str(), s)).collect();
+            .summaries
+            .iter()
+            .map(|s| (s.term.as_str(), s))
+            .collect();
         let fgsea_map: HashMap<&str, &GSEASummary> = gsea_fgsea
-            .summaries.iter().map(|s| (s.term.as_str(), s)).collect();
+            .summaries
+            .iter()
+            .map(|s| (s.term.as_str(), s))
+            .collect();
 
         // Only compare terms present in both results (size filters are identical).
         // Sorted so that any failure names the same gene set on every run.
-        let mut common_terms: Vec<&str> = classical_map.keys()
-            .filter(|&&t| fgsea_map.contains_key(t)).copied().collect();
+        let mut common_terms: Vec<&str> = classical_map
+            .keys()
+            .filter(|&&t| fgsea_map.contains_key(t))
+            .copied()
+            .collect();
         common_terms.sort_unstable();
 
-        assert!(!common_terms.is_empty(), "no gene sets in common between prerank and fgsea");
+        assert!(
+            !common_terms.is_empty(),
+            "no gene sets in common between prerank and fgsea"
+        );
 
         // NES pairs, collected for the distribution-level checks below. Gene sets whose
         // NES is NaN are skipped: prerank_multilevel reports NaN when fewer than 10
@@ -1647,8 +1951,11 @@ mod tests {
             let f = fgsea_map[term];
 
             // ES is deterministic — must be bit-for-bit equal.
-            assert_eq!(c.es, f.es,
-                "ES mismatch for '{}': classical={:.8}, fgsea={:.8}", term, c.es, f.es);
+            assert_eq!(
+                c.es, f.es,
+                "ES mismatch for '{}': classical={:.8}, fgsea={:.8}",
+                term, c.es, f.es
+            );
 
             if c.nes.is_nan() || f.nes.is_nan() {
                 continue;
@@ -1656,49 +1963,73 @@ mod tests {
 
             // Both nulls are same-sign normalised, so NES cannot flip sign relative to
             // ES. A disagreement here means one path picked the wrong side of the null.
-            assert_eq!(c.nes.is_sign_positive(), f.nes.is_sign_positive(),
-                "NES sign mismatch for '{}': classical={:.8}, fgsea={:.8}", term, c.nes, f.nes);
+            assert_eq!(
+                c.nes.is_sign_positive(),
+                f.nes.is_sign_positive(),
+                "NES sign mismatch for '{}': classical={:.8}, fgsea={:.8}",
+                term,
+                c.nes,
+                f.nes
+            );
 
             pairs.push((c.nes, f.nes));
         }
 
-        assert!(pairs.len() > 100, "expected >100 comparable gene sets, got {}", pairs.len());
+        assert!(
+            pairs.len() > 100,
+            "expected >100 comparable gene sets, got {}",
+            pairs.len()
+        );
 
         // The two NES estimates must track each other tightly. Bounds are deliberately
         // loose -- they exist to catch one path regressing to a different statistic, not
         // to police Monte-Carlo noise at only 50 permutations. Measured here: median
         // relative difference 0.033, correlation 0.997.
-        let mut rel: Vec<f64> = pairs.iter()
-            .map(|(c, f)| (f - c).abs() / c.abs())
-            .collect();
+        let mut rel: Vec<f64> = pairs.iter().map(|(c, f)| (f - c).abs() / c.abs()).collect();
         rel.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let median_rel = rel[rel.len() / 2];
 
         let n = pairs.len() as f64;
         let mean_c = pairs.iter().map(|p| p.0).sum::<f64>() / n;
         let mean_f = pairs.iter().map(|p| p.1).sum::<f64>() / n;
-        let cov: f64 = pairs.iter().map(|(c, f)| (c - mean_c) * (f - mean_f)).sum::<f64>();
+        let cov: f64 = pairs
+            .iter()
+            .map(|(c, f)| (c - mean_c) * (f - mean_f))
+            .sum::<f64>();
         let var_c: f64 = pairs.iter().map(|(c, _)| (c - mean_c).powi(2)).sum::<f64>();
         let var_f: f64 = pairs.iter().map(|(_, f)| (f - mean_f).powi(2)).sum::<f64>();
         let corr = cov / (var_c.sqrt() * var_f.sqrt());
 
-        println!("test_prerank_vs_fgsea: {} terms compared, {} with comparable NES; \
+        println!(
+            "test_prerank_vs_fgsea: {} terms compared, {} with comparable NES; \
                   median rel diff {:.4}, correlation {:.6}",
-                 common_terms.len(), pairs.len(), median_rel, corr);
+            common_terms.len(),
+            pairs.len(),
+            median_rel,
+            corr
+        );
 
-        assert!(median_rel < 0.10,
+        assert!(
+            median_rel < 0.10,
             "classical and fgsea NES have diverged: median relative difference {:.4}, \
-             expected < 0.10", median_rel);
-        assert!(corr > 0.99,
+             expected < 0.10",
+            median_rel
+        );
+        assert!(
+            corr > 0.99,
             "classical and fgsea NES are no longer tracking: correlation {:.6}, \
-             expected > 0.99", corr);
+             expected > 0.99",
+            corr
+        );
 
         // Print a few for visual inspection
         for term in common_terms.iter().take(5) {
             let c = classical_map[term];
             let f = fgsea_map[term];
-            println!("  {} | classical es={:.6} nes={:.6} | fgsea es={:.6} nes={:.6}",
-                term, c.es, c.nes, f.es, f.nes);
+            println!(
+                "  {} | classical es={:.6} nes={:.6} | fgsea es={:.6} nes={:.6}",
+                term, c.es, c.nes, f.es, f.nes
+            );
         }
     }
 }
