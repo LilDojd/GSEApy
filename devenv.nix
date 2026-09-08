@@ -1,9 +1,14 @@
-{ pkgs, ... }:
+{ pkgs, lib, ... }:
 
 {
   packages = [
     pkgs.python3
     pkgs.uv
+  ]
+  ++ lib.optionals pkgs.stdenv.isLinux [
+    pkgs.linuxPackages.perf
+    pkgs.valgrind
+    pkgs.time
   ];
 
   languages.rust = {

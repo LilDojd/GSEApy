@@ -44,3 +44,6 @@ CLAUDE.md
 .devenv/
 .direnv/
 .venv/
+.bench-results/
+cachegrind.out.*
+perf.data*

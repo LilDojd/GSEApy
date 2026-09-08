@@ -26,6 +26,11 @@ jobs:
         run: cargo fmt -p gseapy --check
       - name: Test Rust library
         run: cargo test --release --locked --features "${{ matrix.features }}"
+      - name: Check original benchmark results
+        run: |
+          for workflow in prerank gsea ssgsea ssgsea-permutation multilevel; do
+            cargo bench --locked --bench enrichment --features "${{ matrix.features }}" -- --profile compare "$workflow" 500 20 32 12 1 1
+          done
 
   build:
     runs-on: ubuntu-latest

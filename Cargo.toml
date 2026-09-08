@@ -31,3 +31,11 @@ serde = { version = "1.0", features = ["derive"] }
 wide = { version = "0.7.28", optional = true }
 rand_mt = { version = "6.0.3", default-features = false }
 special = "0.13.1"
+
+[dev-dependencies]
+criterion = { version = "0.8.2", default-features = false, features = ["html_reports", "plotters"] }
+gse-original = { package = "gseapy-original", path = "benches/original" }
+
+[[bench]]
+name = "enrichment"
+harness = false

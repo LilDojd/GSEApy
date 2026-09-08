@@ -1,0 +1,25 @@
+[package]
+name = "gseapy-original"
+version = "1.3.0"
+edition = "2021"
+publish = false
+license-file = "LICENSE"
+
+[lib]
+name = "gse"
+
+[features]
+default = []
+python = ["dep:pyo3"]
+extension-module = ["python", "pyo3/extension-module"]
+
+[dependencies]
+pyo3 = { version = "0.29.0", optional = true }
+rand = { version = "0.9", features = ["small_rng"] }
+rayon = "1.10"
+csv = "1.3"
+itertools = "0.13"
+statrs = "0.17"
+serde = { version = "1.0", features = ["derive"] }
+rand_mt = { version = "6.0.3", default-features = false }
+special = "0.13.1"
