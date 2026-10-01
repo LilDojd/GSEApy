@@ -10,6 +10,7 @@ import pandas as pd
 from pandas.api.types import is_object_dtype, is_string_dtype
 
 from gseapy.enrichr import EnrichrAPI
+from gseapy.frames import PolarsResults, is_polars, to_pandas
 from gseapy.plot import GSEAPlot, TracePlot, gseaplot, heatmap
 from gseapy.utils import DEFAULT_CACHE_PATH, log_init, mkdirs
 
@@ -179,7 +180,7 @@ class GMT:
         return ((name, coll["genes"]) for name, coll in self._collections.items())
 
 
-class GSEAbase(object):
+class GSEAbase(PolarsResults):
     """base class of GSEA."""
 
     def __init__(
@@ -286,8 +287,12 @@ class GSEAbase(object):
 
     def _load_data(self, exprs: Union[str, pd.Series, pd.DataFrame]) -> pd.DataFrame:
         """
-        helper function to read data
+        helper function to read data; polars frames are converted to pandas
         """
+        if is_polars(exprs):
+            exprs = to_pandas(exprs)
+            if isinstance(exprs, pd.Series):
+                raise TypeError("A polars Series has no gene names: pass a DataFrame with gene names first")
         # load data
         if isinstance(exprs, pd.DataFrame):
             rank_metric = exprs.copy()

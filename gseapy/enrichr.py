@@ -12,6 +12,7 @@ import pandas as pd
 import requests
 
 from gseapy.biomart import Biomart
+from gseapy.frames import PolarsResults, to_pandas
 from gseapy.plot import barplot
 from gseapy.stats import calc_pvalues, multiple_testing_correction
 from gseapy.utils import DEFAULT_CACHE_PATH, log_init, mkdirs, retry
@@ -310,7 +311,7 @@ class EnrichrAPI:
         return res.loc[:, colord]
 
 
-class Enrichr(EnrichrAPI):
+class Enrichr(EnrichrAPI, PolarsResults):
     """Enrichr API"""
 
     def __init__(
@@ -470,23 +471,24 @@ class Enrichr(EnrichrAPI):
 
     def parse_genelists(self) -> str:
         """Parse gene list with single-pass processing."""
-        if isinstance(self.gene_list, list):
-            genes = self.gene_list
-        elif isinstance(self.gene_list, pd.DataFrame):
+        gene_list = to_pandas(self.gene_list)
+        if isinstance(gene_list, list):
+            genes = gene_list
+        elif isinstance(gene_list, pd.DataFrame):
             # input type is bed file
-            if self.gene_list.shape[1] >= 3:
-                genes = self.gene_list.iloc[:, :3].apply(lambda x: "\t".join([str(i) for i in x]), axis=1).to_list()
+            if gene_list.shape[1] >= 3:
+                genes = gene_list.iloc[:, :3].apply(lambda x: "\t".join([str(i) for i in x]), axis=1).to_list()
             # input type with weight values
-            elif self.gene_list.shape[1] == 2:
-                genes = self.gene_list.apply(lambda x: ",".join([str(i) for i in x]), axis=1).to_list()
+            elif gene_list.shape[1] == 2:
+                genes = gene_list.apply(lambda x: ",".join([str(i) for i in x]), axis=1).to_list()
             else:
-                genes = self.gene_list.squeeze().to_list()
-        elif isinstance(self.gene_list, pd.Series):
-            genes = self.gene_list.squeeze().to_list()
+                genes = gene_list.squeeze().to_list()
+        elif isinstance(gene_list, pd.Series):
+            genes = gene_list.squeeze().to_list()
         else:
             # get gene lists or bed file, or gene list with weighted values.
             genes = []
-            with open(self.gene_list) as f:
+            with open(gene_list) as f:
                 for gene in f:
                     genes.append(gene.strip())
 

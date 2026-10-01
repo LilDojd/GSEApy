@@ -38,6 +38,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+polars = ["polars>=1"]
 dev = [
     "ruff",
     "pytest",
@@ -50,7 +51,8 @@ test = [
     "pytest",
     "pytest-cov",
     "pyyaml",
-    "lxml"
+    "lxml",
+    "polars>=1",
 ]
 docs = [
     "sphinx",

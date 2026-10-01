@@ -45,7 +45,7 @@ def gsea(
 ) -> GSEA:
     """Run Gene Set Enrichment Analysis.
 
-    :param data: Gene expression data table, Pandas DataFrame, gct file.
+    :param data: Gene expression data table, pandas or polars DataFrame, gct file.
 
     :param gene_sets: Enrichr Library name or .gmt gene sets file or dict of gene sets. Same input with GSEA.
                NOTE: If multiple gene sets are provided, the FDR null distribution will be based on the combined gene sets.
@@ -194,7 +194,7 @@ def ssgsea(
 ) -> SingleSampleGSEA:
     """Run Gene Set Enrichment Analysis with single sample GSEA tool
 
-    :param data: Expression table, pd.Series, pd.DataFrame, GCT file, or .rnk file format.
+    :param data: Expression table, pd.Series, pandas or polars DataFrame, GCT file, or .rnk file format.
 
     :param gene_sets: Enrichr Library name or .gmt gene sets file or dict of gene sets. Same input with GSEA.
 
@@ -332,7 +332,7 @@ def prerank(
 ) -> Prerank:
     """Run Gene Set Enrichment Analysis with pre-ranked correlation defined by user.
 
-    :param rnk: pre-ranked correlation table or pandas DataFrame. Same input with ``GSEA`` .rnk file.
+    :param rnk: pre-ranked correlation table, or a pandas or polars DataFrame. Same input with ``GSEA`` .rnk file.
 
     :param gene_sets: Enrichr Library name or .gmt gene sets file or dict of gene sets. Same input with GSEA.
                NOTE: If multiple gene sets are provided, the FDR null distribution will be based on the combined gene sets.
@@ -511,7 +511,7 @@ def enrichr(
 ) -> Enrichr:
     """Enrichr API.
 
-    :param gene_list: str, list, tuple, pd.Series, pd.DataFrame. Also supports input txt file path with one gene id per row.
+    :param gene_list: str, list, tuple, pandas or polars Series or DataFrame. Also supports input txt file path with one gene id per row.
                       The gene identifiers in `gene_list` should match the type used in `gene_sets`.
 
     :param gene_sets: str, list of Enrichr Library name(s), or custom defined gene_sets (dict, or gmt file).
@@ -632,7 +632,7 @@ def enrich(
 ) -> Enrichr:
     """Perform over-representation analysis (hypergeometric test).
 
-    :param gene_list: str, list, tuple, series, dataframe. Also support input txt file with one gene id per row.
+    :param gene_list: str, list, tuple, pandas or polars series or dataframe. Also support input txt file with one gene id per row.
                       The input `identifier` should be the same type to `gene_sets`.
 
     :param gene_sets: custom defined gene_sets (dict, or gmt file).
@@ -747,7 +747,7 @@ def gsva(
 ) -> GSVA:
     """Run Gene Set Enrichment Analysis with single sample GSEA tool
 
-    :param data: Expression table, pd.Series, pd.DataFrame, GCT file
+    :param data: Expression table, pd.Series, pandas or polars DataFrame, GCT file
 
     :param gene_sets: Enrichr Library name or .gmt gene sets file or dict of gene sets. Same input with GSEA.
 

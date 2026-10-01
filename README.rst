@@ -138,9 +138,10 @@ Mandatory
 * run
     * Numpy >= 1.13.0
     * Scipy
-    * Pandas
+    * Pandas >= 1.5
     * Matplotlib
     * Requests
+    * polars >= 1 (optional)
 
 Run GSEApy
 -----------------
@@ -232,6 +233,17 @@ see detail here: `Example <http://gseapy.readthedocs.io/en/master/gseapy_example
 
 
 3. For ``enrichr`` , you could assign a list, pd.Series, pd.DataFrame object, or a txt file (should be one gene name per row.)
+
+4. polars works wherever a pandas DataFrame or Series does (``pip install gseapy[polars]``; pyarrow is not needed).
+   polars has no index, so put gene names in the first column. Every result object's ``to_polars()`` returns ``res2d`` as a polars DataFrame.
+
+.. code:: python
+
+    import polars as pl
+
+    ranking = pl.DataFrame({"gene": genes, "score": scores})
+    pre = gseapy.prerank(rnk=ranking, gene_sets='KEGG_2016', outdir=None)
+    pre.to_polars()
 
 .. code:: python
 

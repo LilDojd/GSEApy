@@ -17,6 +17,7 @@ from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
 from matplotlib.ticker import MaxNLocator
 
+from gseapy.frames import is_polars, to_pandas
 from gseapy.scipalette import SciPalette
 
 
@@ -78,6 +79,10 @@ class Heatmap(object):
         self.ofname = ofname
         self.ax = ax
 
+        if is_polars(df):
+            df = to_pandas(df)
+            if not pd.api.types.is_numeric_dtype(df.dtypes.iloc[0]):
+                df = df.set_index(df.columns[0])
         # scale dataframe
         df = df.astype(float)
         df = zscore(df, axis=z_score)
@@ -206,7 +211,7 @@ def heatmap(
 ):
     """Visualize the dataframe.
 
-    :param df: DataFrame from expression table.
+    :param df: DataFrame from expression table, pandas or polars (row labels in the first column).
     :param z_score: 0, 1, or None. z_score axis{0, 1}. If None, not scale.
     :param title: figure title.
     :param figsize: heatmap figsize.
@@ -628,7 +633,7 @@ class DotPlot(object):
         """Visualize GSEApy Results with categorical scatterplot
         When multiple datasets exist in the input dataframe, the `x` argument is your friend.
 
-        :param df: GSEApy DataFrame results.
+        :param df: GSEApy DataFrame results, pandas or polars.
         :param x: Categorical variable in `df` that map the x-axis data. Default: None.
         :param y: Categorical variable in `df` that map the y-axis data. Default: Term.
         :param hue: Grouping variable that will produce points with different colors.
@@ -655,6 +660,7 @@ class DotPlot(object):
         :param wrap_width: int, optional. Maximum number of characters per line for y-axis labels.
                            Long gene set names are wrapped using textwrap. Default: None (no wrapping).
         """
+        df = to_pandas(df)
         self.marker = marker
         self.y = y
         self.x = x
@@ -1176,7 +1182,7 @@ def dotplot(
     """Visualize GSEApy Results with categorical scatterplot
     When multiple datasets exist in the input dataframe, the `x` argument is your friend.
 
-    :param df: GSEApy DataFrame results.
+    :param df: GSEApy DataFrame results, pandas or polars.
     :param column: column name in `df` that map the dot colors. Default: Adjusted P-value.
     :param x: Categorical variable in `df` that map the x-axis data. Default: None.
     :param y: Categorical variable in `df` that map the y-axis data. Default: Term.
@@ -1265,7 +1271,7 @@ def ringplot(
 ):
     """ringplot is deprecated, use dotplot instead
 
-    :param df: GSEApy DataFrame results.
+    :param df: GSEApy DataFrame results, pandas or polars.
     :param x:  Group by the variable in `df` that will produce categorical scatterplot.
     :param column: column name in `df` to map the dot colors. Default: Adjusted P-value
     :param title: figure title
@@ -1303,7 +1309,7 @@ def barplot(
     """Visualize GSEApy Results.
     When multiple datasets exist in the input dataframe, the `group` argument is your friend.
 
-    :param df: GSEApy DataFrame results.
+    :param df: GSEApy DataFrame results, pandas or polars.
     :param column: column name in `df` to map the x-axis data. Default: Adjusted P-value
     :param group: group by the variable in `df` that will produce bars with different colors.
     :param title: figure title.
@@ -1622,7 +1628,7 @@ def enrichment_map(
     Gray edges correspond to both nodes when it is the only colour edge.
     When there are two different edge colours, red corresponds to positve nodes and blue corresponds to negative nodes.
 
-    :param df: GSEApy DataFrame results.
+    :param df: GSEApy DataFrame results, pandas or polars.
     :param column: column name in `df` to map the node colors. Default: Adjusted P-value or FDR q-val.
                    choose from ("Adjusted P-value", "P-value", "FDR q-val", "NOM p-val").
 
@@ -1634,6 +1640,7 @@ def enrichment_map(
 
     :return: tuple of dataframe (nodes, edges)
     """
+    df = to_pandas(df)
     # c = column
     if column not in df.columns:
         for c in ["Adjusted P-value", "P-value", "FDR q-val", "NOM p-val"]:
