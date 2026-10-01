@@ -160,16 +160,8 @@ class GSEA(GSEAbase):
         # remove rows that are all zeros !
         df = df.loc[df.abs().sum(axis=1) > 0, :]
         # drop gene which std == 0 in all samples
-        # compatible to py3.7
-        major, minor, _ = [int(i) for i in pd.__version__.split(".")]
-        # handle cases for samples < 3, use mean
-        if (major == 1 and minor < 5) or (major < 1):
-            # fix numeric_only error
-            df_std = df.groupby(by=cls_dict, axis=1).std(ddof=0)
-        else:
-            gene_idxs = df.index.to_list()
-            # df_std = df.groupby(by=cls_dict, axis=1).std(numeric_only=True, ddof=0)
-            df_std = df.T.groupby(by=cls_dict)[gene_idxs].std(numeric_only=True, ddof=0).T
+        gene_idxs = df.index.to_list()
+        df_std = df.T.groupby(by=cls_dict)[gene_idxs].std(numeric_only=True, ddof=0).T
 
         # remove rows that std are zeros for sample size >= 3 in each group
         if all(map(lambda a: a[1] >= 3, Counter(cls_dict.values()).items())):
@@ -233,18 +225,9 @@ class GSEA(GSEAbase):
         """
 
         # exclude any zero stds.
-        # compatible to py3.7
-        major, minor, _ = [int(i) for i in pd.__version__.split(".")]
-        if (major == 1 and minor < 5) or (major < 1):
-            # fix numeric_only error
-            df_mean = df.groupby(by=classes, axis=1).mean()
-            df_std = df.groupby(by=classes, axis=1).std()
-        else:
-            gene_idxs = df.index.to_list()
-            df_std = df.T.groupby(by=classes)[gene_idxs].std(numeric_only=True).T
-            df_mean = df.T.groupby(by=classes)[gene_idxs].mean(numeric_only=True).T
-            # df_mean = df.groupby(by=classes, axis=1).mean(numeric_only=True)
-            # df_std = df.groupby(by=classes, axis=1).std(numeric_only=True)
+        gene_idxs = df.index.to_list()
+        df_std = df.T.groupby(by=classes)[gene_idxs].std(numeric_only=True).T
+        df_mean = df.T.groupby(by=classes)[gene_idxs].mean(numeric_only=True).T
         class_values = Counter(classes.values())
         n_pos = class_values[pos]
         n_neg = class_values[neg]
@@ -507,10 +490,13 @@ class Prerank(GSEAbase):
         rankser = rank_metric.set_index("gene_name", drop=True).squeeze()
 
         # check whether contains infinity values
-        if np.isinf(rankser).values.sum() > 0:
+        neg_inf, pos_inf = np.isneginf(rankser), np.isposinf(rankser)
+        if neg_inf.any() or pos_inf.any():
             self._logger.warning("Input gene rankings contains inf values!")
-            rankser.replace(-np.inf, method="ffill", inplace=True)
-            rankser.replace(np.inf, method="bfill", inplace=True)
+            finite = rankser.mask(neg_inf | pos_inf)
+            previous, following = finite.ffill(), finite.bfill()
+            rankser = rankser.mask(neg_inf & previous.notna(), previous)
+            rankser = rankser.mask(pos_inf & following.notna(), following)
 
         # check duplicate values and warning
         dups = rankser.duplicated().sum()

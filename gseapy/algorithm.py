@@ -69,7 +69,7 @@ def enrichment_score(
     # Test whether each element of a 1-D array is also present in a second array
     # It's more intuitive here than original enrichment_score source code.
     # use .astype to covert bool to integer
-    tag_indicator = np.in1d(gene_list, gene_set, assume_unique=True).astype(
+    tag_indicator = np.isin(gene_list, gene_set, assume_unique=True).astype(
         int
     )  # notice that the sign is 0 (no tag) or 1 (tag)
 
@@ -171,7 +171,7 @@ def enrichment_score_tensor(
         # for 1d ndarray of gene_mat, set assume_unique=True,
         # means the input arrays are both assumed to be unique,
         # which can speed up the calculation.
-        tag_indicator = np.vstack([np.in1d(gene_mat, gene_sets[key], assume_unique=True) for key in keys])
+        tag_indicator = np.vstack([np.isin(gene_mat, gene_sets[key], assume_unique=True) for key in keys])
         tag_indicator = tag_indicator.astype(int)
         # index of hits
         hit_ind = [np.flatnonzero(tag).tolist() for tag in tag_indicator]
@@ -199,7 +199,7 @@ def enrichment_score_tensor(
         # genestes->M, genes->N, perm-> axis=2
         # don't use assume_unique=True in 2d array when use np.isin().
         # elements in gene_mat are not unique, or will cause unwanted results
-        tag_indicator = np.vstack([np.in1d(genes, gene_sets[key], assume_unique=True) for key in keys])
+        tag_indicator = np.vstack([np.isin(genes, gene_sets[key], assume_unique=True) for key in keys])
         tag_indicator = tag_indicator.astype(int)
         perm_tag_tensor = np.stack([tag.take(genes_ind).T for tag in tag_indicator], axis=0)
         # index of hits
