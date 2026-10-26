@@ -615,10 +615,10 @@ class Enrichr(EnrichrAPI, PolarsResults):
         self._logger.info(f"Using all annotated genes with GO_ID as background: {self.background}")
         # input id type: entrez or gene_name
         if self._isezid:
-            df.dropna(subset=["entrezgene_id"], inplace=True)
+            df = df.dropna(subset=["entrezgene_id"])
             bg = df["entrezgene_id"].astype(int)
         else:
-            df.dropna(subset=["external_gene_name"], inplace=True)
+            df = df.dropna(subset=["external_gene_name"])
             bg = df["external_gene_name"]
 
         return set(bg)

@@ -474,18 +474,18 @@ class Prerank(GSEAbase):
         # if self.ascending is None and not rank_metric.iloc[:, -1].is_monotonic_decreasing:
         #     rank_metric.sort_values(by=rnk_cols[-1], ascending=False, inplace=True)
         if self.ascending is not None:
-            rank_metric.sort_values(by=rnk_cols[-1], ascending=self.ascending, inplace=True)
+            rank_metric = rank_metric.sort_values(by=rnk_cols[-1], ascending=self.ascending)
         # drop na values
         if rank_metric.isnull().any(axis=1).sum() > 0:
             self._logger.warning("Input gene rankings contains NA values(gene name and ranking value), drop them all!")
             # print out NAs
             NAs = rank_metric[rank_metric.isnull().any(axis=1)]
             self._logger.debug("NAs list:\n" + NAs.to_string())
-            rank_metric.dropna(how="any", inplace=True)
+            rank_metric = rank_metric.dropna(how="any")
         # rename duplicate id, make them unique
         rank_metric = self.make_unique(rank_metric, col_idx=0)
         # reset ranking index, because you have sort values and drop duplicates.
-        rank_metric.reset_index(drop=True, inplace=True)
+        rank_metric = rank_metric.reset_index(drop=True)
         rank_metric.columns = ["gene_name", "prerank"]
         rankser = rank_metric.set_index("gene_name", drop=True).squeeze()
 

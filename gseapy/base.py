@@ -340,11 +340,11 @@ class GSEAbase(PolarsResults):
         ## then fill na for numeric columns
         if exprs.isnull().any().sum() > 0:
             self._logger.warning("Input data contains NA, filled NA with 0")
-            exprs.dropna(how="all", inplace=True)  # drop rows with all NAs
+            exprs = exprs.dropna(how="all")  # drop rows with all NAs
             exprs = exprs.fillna(0)
         ## check duplicated IDs
         # set gene name as index
-        exprs.set_index(keys=exprs.columns[0], inplace=True)
+        exprs = exprs.set_index(keys=exprs.columns[0])
         # select numberic columns
         df = exprs.select_dtypes(include=[np.number])
         # microarray data may contained multiple probs of same gene, average them
@@ -761,7 +761,7 @@ class GSEAbase(PolarsResults):
         for name, dd in res_df.groupby("name"):
             self._results[name] = dd.set_index("term").to_dict(orient="index")
         # trim
-        res_df.rename(
+        res_df = res_df.rename(
             columns={
                 "name": "Name",
                 "term": "Term",
@@ -774,7 +774,6 @@ class GSEAbase(PolarsResults):
                 "gene %": "Gene %",
                 "lead_genes": "Lead_genes",
             },
-            inplace=True,
         )
         # res_df["Gene %"] = res_df["Gene %"].map(lambda x: "{0:.2%}".format(x) if x !="" else "")
         # Replace 0 p-values with the minimum detectable value (1/permutation_num)
@@ -816,7 +815,7 @@ class GSEAbase(PolarsResults):
         self.res2d = res_df.reindex(res_df["NES"].abs().sort_values(ascending=False).index).reset_index(drop=True)
         # de-duplicate while preserving order (e.g. FWER p-val may be added twice)
         dc = list(dict.fromkeys(dc))
-        self.res2d.drop(dc, axis=1, inplace=True)
+        self.res2d = self.res2d.drop(dc, axis=1)
 
         if self._outdir is not None:
             out = os.path.join(
